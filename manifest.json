@@ -1,0 +1,14 @@
+{
+  "name": "Mi Día Nutricional",
+  "short_name": "Nutrición",
+  "description": "Tracker nutricional diario con macros y deficit",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0B1120",
+  "theme_color": "#0B1120",
+  "icons": [
+    { "src": "hot-pot-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
+    { "src": "hot-pot-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ]
+}

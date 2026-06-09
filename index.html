@@ -1,0 +1,1481 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Mi Día Nutricional</title>
+<link rel="icon" type="image/x-icon" href="hot-pot.ico">
+<link rel="shortcut icon" type="image/x-icon" href="hot-pot.ico">
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#0B1120">
+<link rel="apple-touch-icon" href="hot-pot-192.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Mi Día Nutricional">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.9/babel.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:linear-gradient(180deg,#0B1120 0%,#0F1A35 50%,#0B1120 100%);background-attachment:fixed;color:#C8D6E5;font-family:'Segoe UI',system-ui,sans-serif;min-height:100vh}
+input[type=number],input[type=text]{background:#0B1120;border:1.5px solid #1A2744;color:#fff;border-radius:8px;padding:8px 12px;font-size:14px;font-weight:600;outline:none;transition:border 0.2s}
+input[type=number]{font-size:18px;font-weight:700;width:130px;text-align:center}
+input[type=number]:focus,input[type=text]:focus{border-color:#6C5CE7}
+input[type=number]::-webkit-inner-spin-button{opacity:1}
+.chip{cursor:pointer;user-select:none;transition:transform 0.12s ease,box-shadow 0.18s ease,background 0.15s ease,border-color 0.15s ease}
+.chip:active{transform:scale(0.95)!important}
+.chip:hover{transform:translateY(-1px)}
+.btn{cursor:pointer;transition:all 0.15s ease;user-select:none}
+.btn:hover{filter:brightness(1.15)}
+.btn:active{transform:scale(0.97)}
+.macro-seg{transition:filter 0.2s ease}
+.macro-seg:hover{filter:brightness(1.3)}
+@keyframes fadeIn{from{opacity:0;transform:translateY(-6px)}to{opacity:1;transform:translateY(0)}}
+.fade-in{animation:fadeIn 0.2s ease}
+::-webkit-scrollbar{width:6px}
+::-webkit-scrollbar-track{background:#0B1120}
+::-webkit-scrollbar-thumb{background:#1A2744;border-radius:4px}
+::-webkit-scrollbar-thumb:hover{background:#6C5CE7}
+.day-sidebar{position:fixed;left:calc(50% - 330px);top:50%;transform:translateY(-50%);background:rgba(19,29,53,0.95);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);border:1px solid #1A2744;border-radius:12px;padding:14px 10px;width:64px;z-index:50}
+@media(max-width:720px){.day-sidebar{display:none}}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+
+const { useState, useMemo, useEffect, useCallback, useRef } = React;
+
+const STORAGE_KEY = 'miDiaNutricional_v9';
+const HISTORY_KEY = 'miDiaNutricional_v9_history';
+const AI_KEY_STORAGE = 'miDiaNutricional_openaiKey';
+const AI_MODEL_STORAGE = 'miDiaNutricional_openaiModel';
+const AI_SYSTEM_PROMPT = `Convertis una descripcion en lenguaje natural de lo que una persona comio hoy en selecciones de un tracker nutricional.
+Te paso un CATALOGO: cada entrada tiene "key" (id de seccion), "meal" (comida), "seccion", "nada" (id que representa "nada/sin/ninguna" en esa seccion) y "opciones" (lista de "id = etiqueta (macros)").
+Reglas:
+- Devolve un id por CADA key del catalogo, sin excepcion.
+- Si el usuario NO menciona nada para una seccion, devolve el id de "nada" de esa seccion.
+- Elegi SIEMPRE la opcion de cantidad mas cercana a lo que dijo (ej: "170g de pechuga" -> la opcion de 180g). Nunca inventes ids ni valores que no esten en el catalogo.
+- Interpreta sinonimos y espanol rioplatense (pechuga=pollo, palta=aguacate, batata=papa dulce, choclo=maiz, etc.).
+- Responde unicamente el JSON pedido, sin texto adicional.`;
+const DIA_TIPICO = {
+  des_carb: 'harina_almendra', des_prot: 'pech100',
+  mm_snack: 'almendras_fruta',
+  alm_prot: 'pech180a', alm_hort: 'hort250', alm_aceite: 'oliva1', alm_colores: 'sin_colores_a', alm_energ: 'papa150a',
+  mer_carb: 'harina_almendra_m', mer_prot: 'pech100m',
+  cena_prot: 'pech160c', cena_hort: 'hort250c', cena_aceite: 'sin_aceite_cena', cena_colores: 'sin_colores_c', cena_energ: 'papa100',
+  frutas_extra: 'frutas2', choco: 'choco0',
+  add_batata_a: 'sin_batata_aa', add_huevos1_a: 'sin_huevo1_aa', add_huevos2_a: 'sin_huevo2_aa',
+  add_batata_c: 'sin_batata_cc', add_huevos1_c: 'sin_huevo1_cc', add_huevos2_c: 'sin_huevo2_cc',
+  leche_ml: 'leche0', huevos_extra1: 'sin_hx1', huevos_extra2: 'sin_hx2'
+};
+const DIA_TIPICO_TEXTO = `DIA TIPICO del usuario (su base habitual):
+- Desayuno: 100g pechuga + 30g harina de almendras + te verde.
+- Media manana: 10 almendras + 1 fruta.
+- Almuerzo: 160-180g pechuga + 120-220g energetico (papa/batata/choclo) + 150-300g hortalizas + 1 cdta oliva + mucho limon.
+- Merienda: 100g pechuga (o atun) + 30g harina de almendras.
+- Cena: 160-170g pechuga + a veces 70-150g energetico + 110-280g hortalizas + mucho limon (SIN oliva en la cena; la oliva va solo en el almuerzo).
+- Extras del dia: 2 frutas.
+Estructura: base fija = proteina magra alta; acompanamiento = energetico moderado; volumen = hortalizas; grasa = 1 cdta oliva; bebida = te verde.`;
+const SYNC_URL = 'https://ecddaniele.app.n8n.cloud/webhook/mdn-sync';
+const SYNC_CODE_STORAGE = 'miDiaNutricional_syncCode';
+const AUTOSYNC_STORAGE = 'miDiaNutricional_autoSync';
+const TIPICO_CUSTOM_STORAGE = 'miDiaNutricional_diaTipicoCustom';
+const LASTSYNC_STORAGE = 'miDiaNutricional_lastSyncedAt';
+const COMOVOY_STORAGE = 'miDiaNutricional_comoVoyCfg';
+const MEAL_HORARIOS_DEFAULT = { desayuno: 8, media_manana: 10.5, almuerzo: 13, merienda: 17.5, cena: 21, extras: 17.5, add_almuerzo: 13, add_cena: 21, leche: 8, huevos_dia: 13 };
+const COMIDAS_PRINCIPALES = [["desayuno","☀️ Desayuno"],["media_manana","🥜 Media mañana"],["almuerzo","🍗 Almuerzo"],["merienda","🫖 Merienda"],["cena","🌙 Cena"]];
+const fmtHora = (dec) => { const hh = Math.floor(dec); const mm = Math.round((dec - hh) * 60); return String(hh).padStart(2,"0") + ":" + String(mm).padStart(2,"0"); };
+
+const MEALS = {
+  desayuno: {
+    label: "Desayuno", icon: "☀️",
+    sections: [
+      { label: "Carbohidrato", key: "des_carb", options: [
+        { id: "galletas_arroz", label: "Galletas de arroz", kcal: 120, p: 2, c: 26, f: 1 },
+        { id: "avena", label: "Avena (40g)", kcal: 150, p: 5, c: 27, f: 3 },
+        { id: "harina_almendra_10", label: "Harina almendra 10g", kcal: 40, p: 1.3, c: 1, f: 3.3 },
+        { id: "harina_almendra_15", label: "Harina almendra 15g", kcal: 60, p: 2, c: 1.5, f: 5 },
+        { id: "harina_almendra_20", label: "Harina almendra 20g", kcal: 80, p: 3, c: 2, f: 7 },
+        { id: "harina_almendra", label: "Harina almendra 30g", kcal: 120, p: 4, c: 3, f: 10 },
+        { id: "harina_almendra_40", label: "Harina almendra 40g", kcal: 160, p: 5, c: 4, f: 13 },
+        { id: "tostadas", label: "Tostadas integrales", kcal: 120, p: 4, c: 22, f: 2 },
+        { id: "granola_d", label: "Granola sin azucar 30g", kcal: 130, p: 3, c: 20, f: 4, tag: "v4" },
+        { id: "harina_linaza_d", label: "Harina linaza 25g", kcal: 135, p: 5, c: 7, f: 9, tag: "v4" },
+        { id: "chia_d", label: "Chia 25g", kcal: 122, p: 4, c: 10, f: 8, tag: "v4" },
+        { id: "germen_trigo_d", label: "Germen trigo 30g", kcal: 108, p: 7, c: 14, f: 3, tag: "v4" },
+        { id: "quinoa_d", label: "Quinoa 30g", kcal: 110, p: 4, c: 19, f: 2, tag: "v4" },
+        { id: "harina_soja_d", label: "Harina soja 30g", kcal: 130, p: 11, c: 9, f: 6, tag: "v4" },
+        { id: "harina_legumbre_d", label: "Harina legumbre 30g", kcal: 100, p: 6, c: 16, f: 1, tag: "v4" },
+        { id: "fruta1_d", label: "1 fruta", kcal: 60, p: 0, c: 15, f: 0 },
+        { id: "sin_carb_des", label: "Sin carbohidrato", kcal: 0, p: 0, c: 0, f: 0 },
+      ], default: "harina_almendra" },
+      { label: "Proteina (2 porc V2 / 1 porc V3)", key: "des_prot", options: [
+        { id: "pech200", label: "Pechuga 200g", kcal: 330, p: 62, c: 0, f: 7, tag: "2p" },
+        { id: "pulpa200d", label: "Pulpa vaca 200g", kcal: 430, p: 60, c: 0, f: 20, tag: "2p" },
+        { id: "pech100", label: "Pechuga 100g", kcal: 165, p: 31, c: 0, f: 3.5, tag: "1p" },
+        { id: "pulpa100d", label: "Pulpa vaca 100g", kcal: 215, p: 30, c: 0, f: 10, tag: "1p" },
+        { id: "whey2_5d", label: "Whey 75g (2.5 scoops)", ref: true, kcal: 300, p: 62.5, c: 4, f: 2.5, tag: "2p" },
+        { id: "whey2d", label: "Whey 60g (2 scoops)", ref: true, kcal: 240, p: 50, c: 3, f: 2, tag: "2p" },
+        { id: "whey1d", label: "Whey 30g (1 scoop)", ref: true, kcal: 120, p: 25, c: 1.5, f: 1, tag: "1p" },
+        { id: "huevos2_8", label: "2 huevos + 8 claras", kcal: 280, p: 41, c: 2, f: 10, tag: "2p" },
+        { id: "huevos1_4", label: "1 huevo + 4 claras", kcal: 140, p: 20.5, c: 1, f: 5, tag: "1p" },
+        { id: "atun200d", label: "Atun 200g", kcal: 232, p: 52, c: 0, f: 2, tag: "2p" },
+        { id: "atun100d", label: "Atun 100g", kcal: 116, p: 26, c: 0, f: 1, tag: "1p" },
+        { id: "claras17d", label: "17 claras", ref: true, kcal: 289, p: 61, c: 3, f: 1, tag: "2p" },
+        { id: "claras14d", label: "14 claras", ref: true, kcal: 238, p: 50, c: 2.5, f: 0.8, tag: "2p" },
+        { id: "claras9d", label: "9 claras", ref: true, kcal: 153, p: 32, c: 1.5, f: 0.5, tag: "1p" },
+        { id: "queso70_d", label: "Queso descrem. 70g", kcal: 140, p: 14, c: 1, f: 9, tag: "v4" },
+        { id: "ricota150_d", label: "Ricota magra 150g", kcal: 120, p: 14, c: 5, f: 5, tag: "v4" },
+        { id: "tofu150_d", label: "Tofu 150g", kcal: 120, p: 13, c: 2, f: 7, tag: "v4" },
+        { id: "sin_prot_des", label: "Nada", kcal: 0, p: 0, c: 0, f: 0 },
+      ], default: "huevos2_8" }
+    ]
+  },
+  media_manana: {
+    label: "Media Manana", icon: "🥜",
+    sections: [
+      { label: "Snack", key: "mm_snack", options: [
+        { id: "almendras_fruta", label: "10 almendras + 1 fruta", kcal: 130, p: 2.5, c: 17, f: 6 },
+        { id: "alm20g_fruta", label: "20g almendras + 1 fruta", kcal: 176, p: 4, c: 19, f: 10, tag: "v4" },
+        { id: "alm5_fruta", label: "5 almendras + 1 fruta", kcal: 95, p: 1.2, c: 16, f: 3 },
+        { id: "alm5_sola", label: "5 almendras solas", kcal: 35, p: 1.2, c: 1, f: 3 },
+        { id: "alm10_sola", label: "10 almendras solas", kcal: 70, p: 2.5, c: 2, f: 6 },
+        { id: "alm20g_sola", label: "20g almendras solas", kcal: 116, p: 4, c: 4, f: 10, tag: "v4" },
+        { id: "solo_fruta", label: "Solo 1 fruta", kcal: 60, p: 0, c: 15, f: 0 },
+        { id: "sin_mm", label: "Nada", kcal: 0, p: 0, c: 0, f: 0 },
+      ], default: "almendras_fruta" }
+    ]
+  },
+  almuerzo: {
+    label: "Almuerzo", icon: "🍗",
+    sections: [
+      { label: "Proteina principal", key: "alm_prot", options: [
+        { id: "pech180a", label: "Pechuga 180g", kcal: 297, p: 55.8, c: 0, f: 6.5 },
+        { id: "pulpa180a", label: "Pulpa vaca 180g", kcal: 387, p: 54, c: 0, f: 18 },
+        { id: "pech160a", label: "Pechuga 160g", kcal: 264, p: 49.6, c: 0, f: 5.8 },
+        { id: "pulpa160a", label: "Pulpa vaca 160g", kcal: 344, p: 48, c: 0, f: 16 },
+        { id: "pech100a", label: "Pechuga 100g", kcal: 165, p: 31, c: 0, f: 3.5 },
+        { id: "pulpa100a", label: "Pulpa vaca 100g", kcal: 215, p: 30, c: 0, f: 10 },
+        { id: "whey2_5a", label: "Whey 75g (2.5 scoops)", ref: true, kcal: 300, p: 62.5, c: 4, f: 2.5 },
+        { id: "whey2a", label: "Whey 60g (2 scoops)", ref: true, kcal: 240, p: 50, c: 3, f: 2 },
+        { id: "whey1a", label: "Whey 30g (1 scoop)", ref: true, kcal: 120, p: 25, c: 1.5, f: 1 },
+        { id: "pescado180a", label: "Pescado 180g", kcal: 200, p: 40, c: 0, f: 4 },
+        { id: "atun180a", label: "Atun 180g", kcal: 209, p: 47, c: 0, f: 1.8 },
+        { id: "atun160a", label: "Atun 160g", kcal: 186, p: 42, c: 0, f: 1.6 },
+        { id: "atun100a", label: "Atun 100g", kcal: 116, p: 26, c: 0, f: 1 },
+        { id: "claras16a", label: "16 claras", ref: true, kcal: 272, p: 58, c: 2.5, f: 1 },
+        { id: "claras14a", label: "14 claras", ref: true, kcal: 238, p: 50, c: 2.5, f: 0.8 },
+        { id: "claras9a", label: "9 claras", ref: true, kcal: 153, p: 32, c: 1.5, f: 0.5 },
+        { id: "huevos8c2y_a", label: "8 claras + 2 yemas", kcal: 246, p: 38, c: 2, f: 9, tag: "v4" },
+        { id: "queso120_a", label: "Queso descrem. 120g", kcal: 240, p: 24, c: 2, f: 15, tag: "v4" },
+        { id: "legumbres180_a", label: "Legumbres 180g", kcal: 230, p: 16, c: 36, f: 1, tag: "v4" },
+        { id: "sin_prot_alm", label: "Nada", kcal: 0, p: 0, c: 0, f: 0 },
+      ], default: "pech180a" },
+      { label: "Hortalizas", key: "alm_hort", options: [
+        { id: "hort250", label: "250g hortalizas", kcal: 50, p: 2, c: 10, f: 0 },
+        { id: "hort_cole", label: "250g con coles", kcal: 60, p: 3, c: 10, f: 0.5 },
+        { id: "hort250_zanah_a", label: "250g hort + 30g zanahoria", kcal: 62, p: 2.3, c: 12.8, f: 0.1, tag: "v4" },
+        { id: "hort250_zapallo_a", label: "250g hort + 30g zapallo", kcal: 58, p: 2.3, c: 11.5, f: 0.1, tag: "v4" },
+        { id: "hort_cole_zanah_a", label: "250g coles + 30g zanahoria", kcal: 72, p: 3.3, c: 12.8, f: 0.6, tag: "v4" },
+        { id: "hort_cole_zapallo_a", label: "250g coles + 30g zapallo", kcal: 68, p: 3.3, c: 11.5, f: 0.6, tag: "v4" },
+        { id: "sin_hort_a", label: "Sin hortalizas", kcal: 0, p: 0, c: 0, f: 0 },
+      ], default: "hort250" },
+      { label: "Aceite", key: "alm_aceite", options: [
+        { id: "oliva1", label: "1 cdta aceite oliva", kcal: 45, p: 0, c: 0, f: 5 },
+        { id: "chia1", label: "1 cdta aceite chia/lino", kcal: 45, p: 0, c: 0, f: 5 },
+        { id: "tahini1_a", label: "1 cdta tahini", kcal: 45, p: 1, c: 1, f: 4, tag: "v4" },
+        { id: "sin_aceite_alm", label: "Sin aceite", kcal: 0, p: 0, c: 0, f: 0 },
+      ], default: "oliva1" },
+      { label: "Colores extra (30g)", key: "alm_colores", options: [
+        { id: "zanahoria30a", label: "Zanahoria 30g", kcal: 12, p: 0.3, c: 3, f: 0.1 },
+        { id: "zapallo30a", label: "Zapallo 30g", kcal: 8, p: 0.3, c: 2, f: 0 },
+        { id: "sin_colores_a", label: "Sin colores extra", kcal: 0, p: 0, c: 0, f: 0 },
+      ], default: "sin_colores_a" },
+      { label: "Energetico (V4: 150g siempre)", key: "alm_energ", options: [
+        { id: "papa100a", label: "Papa/batata 100g", kcal: 87, p: 1.3, c: 20, f: 0 },
+        { id: "papa150a", label: "Papa/batata 150g", kcal: 130, p: 2, c: 30, f: 0, tag: "v4" },
+        { id: "papa200a", label: "Papa/batata 200g", kcal: 174, p: 2.6, c: 40, f: 0 },
+        { id: "arroz100a", label: "Arroz 100g cocido", kcal: 87, p: 2, c: 19, f: 0.3 },
+        { id: "arroz150a", label: "Arroz 150g cocido", kcal: 130, p: 3, c: 28, f: 0.5, tag: "v4" },
+        { id: "maiz150a", label: "Maiz/choclo 150g", kcal: 130, p: 5, c: 24, f: 2, tag: "v4" },
+        { id: "yuca150a", label: "Yuca 150g", kcal: 240, p: 2, c: 57, f: 0.4, tag: "v4" },
+        { id: "arvejas150a", label: "Arvejas/habas 150g", kcal: 120, p: 8, c: 20, f: 0.5, tag: "v4" },
+        { id: "platano_verde_a", label: "Platano verde 150g", kcal: 165, p: 2, c: 40, f: 0.3, tag: "v4" },
+        { id: "palta100a", label: "Palta 100g", kcal: 160, p: 2, c: 9, f: 15, tag: "v4" },
+        { id: "sin_energ_a", label: "Sin energetico", kcal: 0, p: 0, c: 0, f: 0 },
+      ], default: "papa150a" }
+    ]
+  },
+  merienda: {
+    label: "Merienda", icon: "🫖",
+    sections: [
+      { label: "Carbohidrato", key: "mer_carb", options: [
+        { id: "galletas_arroz_m", label: "Galletas de arroz", kcal: 120, p: 2, c: 26, f: 1 },
+        { id: "avena_m", label: "Avena (40g)", kcal: 150, p: 5, c: 27, f: 3 },
+        { id: "harina_almendra_10m", label: "Harina almendra 10g", kcal: 40, p: 1.3, c: 1, f: 3.3 },
+        { id: "harina_almendra_15m", label: "Harina almendra 15g", kcal: 60, p: 2, c: 1.5, f: 5 },
+        { id: "harina_almendra_20m", label: "Harina almendra 20g", kcal: 80, p: 3, c: 2, f: 7 },
+        { id: "harina_almendra_m", label: "Harina almendra 30g", kcal: 120, p: 4, c: 3, f: 10 },
+        { id: "harina_almendra_40m", label: "Harina almendra 40g", kcal: 160, p: 5, c: 4, f: 13 },
+        { id: "tostadas_m", label: "Tostadas integrales", kcal: 120, p: 4, c: 22, f: 2 },
+        { id: "granola_m", label: "Granola sin azucar 30g", kcal: 130, p: 3, c: 20, f: 4, tag: "v4" },
+        { id: "harina_linaza_m", label: "Harina linaza 25g", kcal: 135, p: 5, c: 7, f: 9, tag: "v4" },
+        { id: "chia_m", label: "Chia 25g", kcal: 122, p: 4, c: 10, f: 8, tag: "v4" },
+        { id: "germen_trigo_m", label: "Germen trigo 30g", kcal: 108, p: 7, c: 14, f: 3, tag: "v4" },
+        { id: "quinoa_m", label: "Quinoa 30g", kcal: 110, p: 4, c: 19, f: 2, tag: "v4" },
+        { id: "harina_soja_m", label: "Harina soja 30g", kcal: 130, p: 11, c: 9, f: 6, tag: "v4" },
+        { id: "harina_legumbre_m", label: "Harina legumbre 30g", kcal: 100, p: 6, c: 16, f: 1, tag: "v4" },
+        { id: "fruta1_m", label: "1 fruta", kcal: 60, p: 0, c: 15, f: 0 },
+        { id: "sin_carb_mer", label: "Sin carbohidrato", kcal: 0, p: 0, c: 0, f: 0 },
+      ], default: "harina_almendra_m" },
+      { label: "Proteina (2 porc V2 / 1 porc V3)", key: "mer_prot", options: [
+        { id: "pech200m", label: "Pechuga 200g", kcal: 330, p: 62, c: 0, f: 7, tag: "2p" },
+        { id: "pulpa200m", label: "Pulpa vaca 200g", kcal: 430, p: 60, c: 0, f: 20, tag: "2p" },
+        { id: "pech100m", label: "Pechuga 100g", kcal: 165, p: 31, c: 0, f: 3.5, tag: "1p" },
+        { id: "pulpa100m", label: "Pulpa vaca 100g", kcal: 215, p: 30, c: 0, f: 10, tag: "1p" },
+        { id: "whey2_5m", label: "Whey 75g (2.5 scoops)", ref: true, kcal: 300, p: 62.5, c: 4, f: 2.5, tag: "2p" },
+        { id: "whey2m", label: "Whey 60g (2 scoops)", ref: true, kcal: 240, p: 50, c: 3, f: 2, tag: "2p" },
+        { id: "whey1m", label: "Whey 30g (1 scoop)", ref: true, kcal: 120, p: 25, c: 1.5, f: 1, tag: "1p" },
+        { id: "huevos2_8m", label: "2 huevos + 8 claras", kcal: 280, p: 41, c: 2, f: 10, tag: "2p" },
+        { id: "huevos1_4m", label: "1 huevo + 4 claras", kcal: 140, p: 20.5, c: 1, f: 5, tag: "1p" },
+        { id: "atun200m", label: "Atun 200g", kcal: 232, p: 52, c: 0, f: 2, tag: "2p" },
+        { id: "atun100m", label: "Atun 100g", kcal: 116, p: 26, c: 0, f: 1, tag: "1p" },
+        { id: "claras17m", label: "17 claras", ref: true, kcal: 289, p: 61, c: 3, f: 1, tag: "2p" },
+        { id: "claras14m", label: "14 claras", ref: true, kcal: 238, p: 50, c: 2.5, f: 0.8, tag: "2p" },
+        { id: "claras9m", label: "9 claras", ref: true, kcal: 153, p: 32, c: 1.5, f: 0.5, tag: "1p" },
+        { id: "queso70_m", label: "Queso descrem. 70g", kcal: 140, p: 14, c: 1, f: 9, tag: "v4" },
+        { id: "ricota150_m", label: "Ricota magra 150g", kcal: 120, p: 14, c: 5, f: 5, tag: "v4" },
+        { id: "tofu150_m", label: "Tofu 150g", kcal: 120, p: 13, c: 2, f: 7, tag: "v4" },
+        { id: "sin_prot_mer", label: "Nada", kcal: 0, p: 0, c: 0, f: 0 },
+      ], default: "huevos2_8m" }
+    ]
+  },
+  cena: {
+    label: "Cena", icon: "🌙",
+    sections: [
+      { label: "Proteina principal", key: "cena_prot", options: [
+        { id: "pech180c", label: "Pechuga 180g", kcal: 297, p: 55.8, c: 0, f: 6.5 },
+        { id: "pulpa180c", label: "Pulpa vaca 180g", kcal: 387, p: 54, c: 0, f: 18 },
+        { id: "pech160c", label: "Pechuga 160g", kcal: 264, p: 49.6, c: 0, f: 5.8 },
+        { id: "pulpa160c", label: "Pulpa vaca 160g", kcal: 344, p: 48, c: 0, f: 16 },
+        { id: "pech100c", label: "Pechuga 100g", kcal: 165, p: 31, c: 0, f: 3.5 },
+        { id: "pulpa100c", label: "Pulpa vaca 100g", kcal: 215, p: 30, c: 0, f: 10 },
+        { id: "whey2_5c", label: "Whey 75g (2.5 scoops)", ref: true, kcal: 300, p: 62.5, c: 4, f: 2.5 },
+        { id: "whey2c", label: "Whey 60g (2 scoops)", ref: true, kcal: 240, p: 50, c: 3, f: 2 },
+        { id: "whey1c", label: "Whey 30g (1 scoop)", ref: true, kcal: 120, p: 25, c: 1.5, f: 1 },
+        { id: "pescado180c", label: "Pescado 180g", kcal: 200, p: 40, c: 0, f: 4 },
+        { id: "atun180c", label: "Atun 180g", kcal: 209, p: 47, c: 0, f: 1.8 },
+        { id: "atun160c", label: "Atun 160g", kcal: 186, p: 42, c: 0, f: 1.6 },
+        { id: "atun100c", label: "Atun 100g", kcal: 116, p: 26, c: 0, f: 1 },
+        { id: "claras16c", label: "16 claras", ref: true, kcal: 272, p: 58, c: 2.5, f: 1 },
+        { id: "claras14c", label: "14 claras", ref: true, kcal: 238, p: 50, c: 2.5, f: 0.8 },
+        { id: "claras9c", label: "9 claras", ref: true, kcal: 153, p: 32, c: 1.5, f: 0.5 },
+        { id: "huevos6c2y_c", label: "6 claras + 2 yemas", kcal: 210, p: 29, c: 1.5, f: 9, tag: "v4" },
+        { id: "queso100_c", label: "Queso descrem. 100g", kcal: 200, p: 20, c: 1.5, f: 13, tag: "v4" },
+        { id: "legumbres160_c", label: "Legumbres 160g", kcal: 200, p: 14, c: 32, f: 1, tag: "v4" },
+        { id: "sin_prot_cena", label: "Nada", kcal: 0, p: 0, c: 0, f: 0 },
+      ], default: "pech180c" },
+      { label: "Hortalizas", key: "cena_hort", options: [
+        { id: "hort250c", label: "250g hortalizas", kcal: 50, p: 2, c: 10, f: 0 },
+        { id: "hort_cole_c", label: "250g con coles", kcal: 60, p: 3, c: 10, f: 0.5 },
+        { id: "hort250_zanah_c", label: "250g hort + 30g zanahoria", kcal: 62, p: 2.3, c: 12.8, f: 0.1, tag: "v4" },
+        { id: "hort250_zapallo_c", label: "250g hort + 30g zapallo", kcal: 58, p: 2.3, c: 11.5, f: 0.1, tag: "v4" },
+        { id: "hort_cole_zanah_c", label: "250g coles + 30g zanahoria", kcal: 72, p: 3.3, c: 12.8, f: 0.6, tag: "v4" },
+        { id: "hort_cole_zapallo_c", label: "250g coles + 30g zapallo", kcal: 68, p: 3.3, c: 11.5, f: 0.6, tag: "v4" },
+        { id: "sin_hort_c", label: "Sin hortalizas", kcal: 0, p: 0, c: 0, f: 0 },
+      ], default: "hort250c" },
+      { label: "Aceite", key: "cena_aceite", options: [
+        { id: "oliva1c", label: "1 cdta aceite oliva", kcal: 45, p: 0, c: 0, f: 5 },
+        { id: "chia1c", label: "1 cdta aceite chia/lino", kcal: 45, p: 0, c: 0, f: 5 },
+        { id: "tahini1_c", label: "1 cdta tahini", kcal: 45, p: 1, c: 1, f: 4, tag: "v4" },
+        { id: "sin_aceite_cena", label: "Sin aceite", kcal: 0, p: 0, c: 0, f: 0 },
+      ], default: "sin_aceite_cena" },
+      { label: "Colores extra (30g)", key: "cena_colores", options: [
+        { id: "zanahoria30c", label: "Zanahoria 30g", kcal: 12, p: 0.3, c: 3, f: 0.1 },
+        { id: "zapallo30c", label: "Zapallo 30g", kcal: 8, p: 0.3, c: 2, f: 0 },
+        { id: "sin_colores_c", label: "Sin colores extra", kcal: 0, p: 0, c: 0, f: 0 },
+      ], default: "sin_colores_c" },
+      { label: "Energetico (V4: 200g, 4x/sem)", key: "cena_energ", options: [
+        { id: "papa50", label: "Papa/batata 50g", kcal: 43, p: 0.7, c: 10, f: 0 },
+        { id: "papa80", label: "Papa/batata 80g", kcal: 65, p: 1, c: 15, f: 0 },
+        { id: "papa100", label: "Papa/batata 100g", kcal: 87, p: 1.3, c: 20, f: 0 },
+        { id: "papa120", label: "Papa/batata 120g", kcal: 104, p: 1.6, c: 24, f: 0 },
+        { id: "papa150", label: "Papa/batata 150g", kcal: 130, p: 2, c: 30, f: 0 },
+        { id: "papa200", label: "Papa/batata 200g", kcal: 174, p: 2.6, c: 40, f: 0 },
+        { id: "arroz100", label: "Arroz 100g cocido", kcal: 87, p: 2, c: 19, f: 0.3 },
+        { id: "arroz150", label: "Arroz 150g cocido", kcal: 130, p: 3, c: 28, f: 0.5 },
+        { id: "arroz200c", label: "Arroz 200g cocido", kcal: 174, p: 4, c: 38, f: 0.6, tag: "v4" },
+        { id: "maiz150c", label: "Maiz/choclo 150g", kcal: 130, p: 5, c: 24, f: 2, tag: "v4" },
+        { id: "maiz200c", label: "Maiz/choclo 200g", kcal: 172, p: 7, c: 32, f: 3, tag: "v4" },
+        { id: "yuca150c", label: "Yuca 150g", kcal: 240, p: 2, c: 57, f: 0.4, tag: "v4" },
+        { id: "yuca200c", label: "Yuca 200g", kcal: 320, p: 3, c: 76, f: 0.5, tag: "v4" },
+        { id: "arvejas150c", label: "Arvejas/habas 150g", kcal: 120, p: 8, c: 20, f: 0.5, tag: "v4" },
+        { id: "arvejas200c", label: "Arvejas/habas 200g", kcal: 160, p: 11, c: 27, f: 0.7, tag: "v4" },
+        { id: "platano_verde_c", label: "Platano verde 150g", kcal: 165, p: 2, c: 40, f: 0.3, tag: "v4" },
+        { id: "platano_verde200c", label: "Platano verde 200g", kcal: 220, p: 3, c: 53, f: 0.4, tag: "v4" },
+        { id: "palta100c", label: "Palta 100g", kcal: 160, p: 2, c: 9, f: 15, tag: "v4" },
+        { id: "sin_energ", label: "Sin energetico", kcal: 0, p: 0, c: 0, f: 0 },
+      ], default: "sin_energ" }
+    ]
+  },
+  extras: {
+    label: "Extras del dia", icon: "🍎",
+    sections: [
+      { label: "Frutas adicionales (V4: 3/dia, banana=2)", key: "frutas_extra", options: [
+        { id: "frutas0", label: "Ninguna extra", kcal: 0, p: 0, c: 0, f: 0 },
+        { id: "frutas1", label: "1 fruta extra", kcal: 60, p: 0, c: 15, f: 0 },
+        { id: "frutas1_5", label: "1.5 frutas extra", kcal: 90, p: 0, c: 22, f: 0 },
+        { id: "frutas2", label: "2 frutas extra", kcal: 120, p: 0, c: 30, f: 0 },
+        { id: "banana1", label: "1 banana (=2 frutas)", kcal: 105, p: 1, c: 27, f: 0, tag: "v4" },
+      ], default: "frutas2" },
+      { label: "Chocolate 70%", key: "choco", options: [
+        { id: "choco0", label: "0g", kcal: 0, p: 0, c: 0, f: 0 },
+        { id: "choco5", label: "5g", kcal: 30, p: 0.4, c: 1.7, f: 2.2 },
+        { id: "choco10", label: "10g", kcal: 60, p: 0.8, c: 3.3, f: 4.3 },
+        { id: "choco15", label: "15g", kcal: 90, p: 1.2, c: 5, f: 6.5 },
+        { id: "choco20", label: "20g", kcal: 120, p: 1.6, c: 6.6, f: 8.6 },
+        { id: "choco25", label: "25g", kcal: 150, p: 2, c: 8.3, f: 10.8 },
+        { id: "choco30", label: "30g", kcal: 180, p: 2.4, c: 9.9, f: 12.9 },
+      ], default: "choco0" }
+    ]
+  },
+  add_almuerzo: {
+    label: "Anadido Almuerzo", icon: "➕🍗",
+    sections: [
+      { label: "Batata extra", key: "add_batata_a", options: [
+        { id: "sin_batata_aa", label: "Nada", kcal: 0, p: 0, c: 0, f: 0 },
+        { id: "batata50_aa", label: "Batata 50g", kcal: 43, p: 0.7, c: 10, f: 0 },
+        { id: "batata100_aa", label: "Batata 100g", kcal: 87, p: 1.3, c: 20, f: 0 },
+      ], default: "sin_batata_aa" },
+      { label: "Huevos enteros (1)", key: "add_huevos1_a", options: [
+        { id: "sin_huevo1_aa", label: "Nada", kcal: 0, p: 0, c: 0, f: 0 },
+        { id: "huevo1_aa", label: "1 huevo", kcal: 72, p: 6, c: 0.4, f: 5 },
+        { id: "huevo2_aa", label: "2 huevos", kcal: 144, p: 12, c: 0.8, f: 10 },
+        { id: "huevo3_aa", label: "3 huevos", kcal: 216, p: 18, c: 1.2, f: 15 },
+      ], default: "sin_huevo1_aa" },
+      { label: "Huevos enteros (2)", key: "add_huevos2_a", options: [
+        { id: "sin_huevo2_aa", label: "Nada", kcal: 0, p: 0, c: 0, f: 0 },
+        { id: "huevo1b_aa", label: "1 huevo", kcal: 72, p: 6, c: 0.4, f: 5 },
+        { id: "huevo2b_aa", label: "2 huevos", kcal: 144, p: 12, c: 0.8, f: 10 },
+        { id: "huevo3b_aa", label: "3 huevos", kcal: 216, p: 18, c: 1.2, f: 15 },
+      ], default: "sin_huevo2_aa" },
+    ]
+  },
+  add_cena: {
+    label: "Anadido Cena", icon: "➕🌙",
+    sections: [
+      { label: "Batata extra", key: "add_batata_c", options: [
+        { id: "sin_batata_cc", label: "Nada", kcal: 0, p: 0, c: 0, f: 0 },
+        { id: "batata50_cc", label: "Batata 50g", kcal: 43, p: 0.7, c: 10, f: 0 },
+        { id: "batata100_cc", label: "Batata 100g", kcal: 87, p: 1.3, c: 20, f: 0 },
+      ], default: "sin_batata_cc" },
+      { label: "Huevos enteros (1)", key: "add_huevos1_c", options: [
+        { id: "sin_huevo1_cc", label: "Nada", kcal: 0, p: 0, c: 0, f: 0 },
+        { id: "huevo1_cc", label: "1 huevo", kcal: 72, p: 6, c: 0.4, f: 5 },
+        { id: "huevo2_cc", label: "2 huevos", kcal: 144, p: 12, c: 0.8, f: 10 },
+        { id: "huevo3_cc", label: "3 huevos", kcal: 216, p: 18, c: 1.2, f: 15 },
+      ], default: "sin_huevo1_cc" },
+      { label: "Huevos enteros (2)", key: "add_huevos2_c", options: [
+        { id: "sin_huevo2_cc", label: "Nada", kcal: 0, p: 0, c: 0, f: 0 },
+        { id: "huevo1b_cc", label: "1 huevo", kcal: 72, p: 6, c: 0.4, f: 5 },
+        { id: "huevo2b_cc", label: "2 huevos", kcal: 144, p: 12, c: 0.8, f: 10 },
+        { id: "huevo3b_cc", label: "3 huevos", kcal: 216, p: 18, c: 1.2, f: 15 },
+      ], default: "sin_huevo2_cc" },
+    ]
+  },
+  leche: {
+    label: "Leche descremada", icon: "🥛",
+    sections: [
+      { label: "Mililitros", key: "leche_ml", options: [
+        { id: "leche0", label: "Nada", kcal: 0, p: 0, c: 0, f: 0 },
+        { id: "leche100", label: "100 ml", kcal: 20, p: 2, c: 3, f: 0 },
+        { id: "leche200", label: "200 ml", kcal: 40, p: 4, c: 6, f: 0 },
+        { id: "leche300", label: "300 ml", kcal: 60, p: 6, c: 9, f: 0 },
+        { id: "leche400", label: "400 ml", kcal: 80, p: 8, c: 12, f: 0 },
+        { id: "leche500", label: "500 ml", kcal: 100, p: 10, c: 15, f: 0 },
+      ], default: "leche0" }
+    ]
+  },
+  huevos_dia: {
+    label: "Huevos enteros extra", icon: "🍳",
+    sections: [
+      { label: "Huevos enteros (1)", key: "huevos_extra1", options: [
+        { id: "sin_hx1", label: "Nada", kcal: 0, p: 0, c: 0, f: 0 },
+        { id: "hx1_1", label: "1 huevo", kcal: 72, p: 6, c: 0.4, f: 5 },
+        { id: "hx1_2", label: "2 huevos", kcal: 144, p: 12, c: 0.8, f: 10 },
+        { id: "hx1_3", label: "3 huevos", kcal: 216, p: 18, c: 1.2, f: 15 },
+      ], default: "sin_hx1" },
+      { label: "Huevos enteros (2)", key: "huevos_extra2", options: [
+        { id: "sin_hx2", label: "Nada", kcal: 0, p: 0, c: 0, f: 0 },
+        { id: "hx2_1", label: "1 huevo", kcal: 72, p: 6, c: 0.4, f: 5 },
+        { id: "hx2_2", label: "2 huevos", kcal: 144, p: 12, c: 0.8, f: 10 },
+        { id: "hx2_3", label: "3 huevos", kcal: 216, p: 18, c: 1.2, f: 15 },
+      ], default: "sin_hx2" }
+    ]
+  }
+};
+
+const MLG = 56.5;
+
+function App() {
+  const defaults = {};
+  const zeroDefaults = {};
+  Object.values(MEALS).forEach(meal => {
+    meal.sections.forEach(s => {
+      defaults[s.key] = s.default;
+      const zero = s.options.find(o => o.kcal === 0);
+      zeroDefaults[s.key] = zero ? zero.id : s.default;
+    });
+  });
+
+  const stored = (() => { try { const r = localStorage.getItem(STORAGE_KEY); return r ? JSON.parse(r) : null; } catch(e) { return null; } })();
+  const [sel, setSel] = useState(stored?.sel || defaults);
+  const [gastoWhoop, setGastoWhoop] = useState(stored?.gastoWhoop || "");
+  const [searchQuery, setSearchQuery] = useState("");
+  const [onlyV4, setOnlyV4] = useState(false);
+  const [history, setHistory] = useState(() => { try { const r = localStorage.getItem(HISTORY_KEY); return r ? JSON.parse(r) : []; } catch(e) { return []; } });
+  const [showHistory, setShowHistory] = useState(false);
+  const [savedFlash, setSavedFlash] = useState(false);
+
+  useEffect(() => {
+    try { localStorage.setItem(STORAGE_KEY, JSON.stringify({ sel, gastoWhoop })); } catch(e) {}
+  }, [sel, gastoWhoop]);
+
+  const update = (key, val) => setSel(prev => ({ ...prev, [key]: val }));
+  const resetAll = () => setSel(zeroDefaults);
+
+  const mealTotals = useMemo(() => {
+    const t = {};
+    Object.entries(MEALS).forEach(([mk, meal]) => {
+      let kcal = 0, p = 0, c = 0, f = 0;
+      meal.sections.forEach(sec => {
+        const ch = sec.options.find(o => o.id === sel[sec.key]);
+        if (ch) { kcal += ch.kcal; p += ch.p; c += ch.c; f += ch.f; }
+      });
+      t[mk] = { kcal, p, c, f };
+    });
+    return t;
+  }, [sel]);
+
+  const results = useMemo(() => {
+    let kcal = 0, p = 0, c = 0, f = 0;
+    Object.values(MEALS).forEach(meal => {
+      meal.sections.forEach(section => {
+        const chosen = section.options.find(o => o.id === sel[section.key]);
+        if (chosen) { kcal += chosen.kcal; p += chosen.p; c += chosen.c; f += chosen.f; }
+      });
+    });
+    const gasto = gastoWhoop ? parseInt(gastoWhoop) : null;
+    const deficit = gasto ? gasto - kcal : null;
+    const deficitPct = gasto ? Math.round((deficit / gasto) * 100) : null;
+    const gkgMLG = p / MLG;
+    const kgSem = deficit ? (deficit * 7) / 7700 : null;
+    const fatPct = kcal > 0 ? Math.round((f * 9 / kcal) * 100) : 0;
+    const carbPct = kcal > 0 ? Math.round((c * 4 / kcal) * 100) : 0;
+    const protPct = kcal > 0 ? Math.round((p * 4 / kcal) * 100) : 0;
+    let helmsZona, helmsColor;
+    if (gkgMLG >= 3.1) { helmsZona = "TECHO (exceso = energia)"; helmsColor = "#00E5A0"; }
+    else if (gkgMLG >= 2.3) { helmsZona = "OPTIMO"; helmsColor = "#00E5A0"; }
+    else if (gkgMLG >= 1.8) { helmsZona = "ACEPTABLE"; helmsColor = "#FFD93D"; }
+    else { helmsZona = "BAJO"; helmsColor = "#FF6B6B"; }
+    let defZona = null, defColor = "#8899BB";
+    if (deficitPct !== null) {
+      if (deficitPct <= 0) { defZona = "Superavit/mantenimiento"; defColor = "#00B8D4"; }
+      else if (deficitPct <= 25) { defZona = "Conservador"; defColor = "#00E5A0"; }
+      else if (deficitPct <= 33) { defZona = "Moderado"; defColor = "#00E5A0"; }
+      else if (deficitPct <= 38) { defZona = "Agresivo"; defColor = "#FFD93D"; }
+      else if (deficitPct <= 42) { defZona = "Limite"; defColor = "#FF8C42"; }
+      else { defZona = "Critico"; defColor = "#FF6B6B"; }
+    }
+    const fatGkg = f / 70.3;
+    let fatZona, fatZonaColor;
+    if (fatGkg >= 0.8) { fatZona = "Optimo"; fatZonaColor = "#00E5A0"; }
+    else if (fatGkg >= 0.5) { fatZona = "Aceptable"; fatZonaColor = "#FFD93D"; }
+    else { fatZona = "Bajo - riesgo hormonal"; fatZonaColor = "#FF6B6B"; }
+    let eaVal = null, eaColor = "#8899BB", eaZona = null;
+    if (gasto) {
+      const ejercicio = gasto > 1579 ? gasto - 1579 : 0;
+      eaVal = (kcal - ejercicio) / MLG;
+      eaColor = eaVal >= 30 ? "#00E5A0" : eaVal >= 25 ? "#FFD93D" : eaVal >= 20 ? "#FF8C42" : "#FF6B6B";
+      eaZona = eaVal >= 30 ? "Segura" : eaVal >= 25 ? "Zona gris" : eaVal >= 20 ? "Riesgo RED-S" : "Peligrosa";
+    }
+    return { kcal, p, c, f, gasto, deficit, deficitPct, gkgMLG, kgSem, fatPct, carbPct, protPct, helmsZona, helmsColor, defZona, defColor, fatGkg, fatZona, fatZonaColor, eaVal, eaColor, eaZona };
+  }, [sel, gastoWhoop]);
+
+  const saveDay = () => {
+    const today = new Date().toISOString().split('T')[0];
+    const entry = { date: today, ts: Date.now(), kcal: results.kcal, p: Math.round(results.p), c: Math.round(results.c), f: Math.round(results.f), gasto: results.gasto, deficit: results.deficit, deficitPct: results.deficitPct, gkgMLG: parseFloat(results.gkgMLG.toFixed(2)), sel: { ...sel }, gastoWhoop };
+    const nh = [entry, ...history.filter(h => h.date !== today)].slice(0, 30);
+    setHistory(nh);
+    try { localStorage.setItem(HISTORY_KEY, JSON.stringify(nh)); } catch(e) {}
+    setSavedFlash(true);
+    setTimeout(() => setSavedFlash(false), 1500);
+    if (autoSync && syncCode.trim()) {
+      const now = new Date().toISOString();
+      const blob = { sel, gastoWhoop, history: nh, diaTipicoCustom, _syncedAt: now, _v: 12 };
+      cloudPost({ op: "set", code: syncCode.trim(), data: JSON.stringify(blob) }).then(() => setLastSyncedAt(now)).catch(e => console.error("[sync] autopush", e));
+    }
+  };
+
+  const loadDay = (entry) => { setSel(entry.sel || defaults); setGastoWhoop(entry.gastoWhoop || ""); setShowHistory(false); };
+  const deleteDay = (ts) => { const nh = history.filter(h => h.ts !== ts); setHistory(nh); try { localStorage.setItem(HISTORY_KEY, JSON.stringify(nh)); } catch(e) {} };
+
+  const optVisible = (opt, sectionKey) => {
+    if (sel[sectionKey] === opt.id) return true;
+    if (onlyV4 && opt.tag !== 'v4') return false;
+    if (searchQuery && !opt.label.toLowerCase().includes(searchQuery.toLowerCase())) return false;
+    return true;
+  };
+
+  const exportPDF = () => {
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF({ unit: "mm", format: "a4" });
+    const W = 210, M = 14, CW = W - 2 * M;
+    let y = 14;
+    const hoy = new Date();
+    const fecha = hoy.toLocaleDateString("es-AR", { weekday: "long", year: "numeric", month: "long", day: "numeric" });
+    const hora = hoy.toLocaleTimeString("es-AR", { hour: "2-digit", minute: "2-digit" });
+    const addPage = (need) => { if (y + need > 280) { doc.addPage(); y = 14; } };
+    const hline = (yy) => { doc.setDrawColor(108, 92, 231); doc.setLineWidth(0.3); doc.line(M, yy, W - M, yy); };
+    const R = results;
+    doc.setFillColor(11, 17, 32); doc.rect(0, 0, W, 40, "F");
+    doc.setFont("helvetica", "bold"); doc.setFontSize(18); doc.setTextColor(255, 255, 255);
+    doc.text("Mi Dia Nutricional", M, 18);
+    doc.setFontSize(10); doc.setTextColor(108, 92, 231);
+    doc.text(fecha + "  -  " + hora, M, 26);
+    doc.setFontSize(8); doc.setTextColor(136, 153, 187);
+    doc.text("MLG: " + MLG + " kg  |  Exportado desde tracker personal", M, 33);
+    y = 46;
+    doc.setFontSize(13); doc.setFont("helvetica", "bold"); doc.setTextColor(40, 40, 40);
+    doc.text("Selecciones del dia", M, y); y += 7;
+    Object.entries(MEALS).forEach(([mk, meal]) => {
+      addPage(20);
+      doc.setFillColor(240, 242, 248); doc.rect(M, y - 4, CW, 7, "F");
+      doc.setFontSize(10); doc.setFont("helvetica", "bold"); doc.setTextColor(50, 50, 50);
+      doc.text(meal.icon + " " + meal.label, M + 2, y); y += 6;
+      meal.sections.forEach(sec => {
+        const ch = sec.options.find(o => o.id === sel[sec.key]);
+        if (ch) {
+          addPage(8);
+          doc.setFontSize(8); doc.setFont("helvetica", "normal"); doc.setTextColor(120, 120, 120);
+          doc.text(sec.label + ":", M + 4, y);
+          doc.setFont("helvetica", "bold"); doc.setTextColor(30, 30, 30);
+          doc.text(ch.kcal > 0 ? ch.label + "  (" + ch.kcal + " kcal | P:" + ch.p + "g C:" + ch.c + "g G:" + ch.f + "g)" : ch.label, M + 4, y + 4);
+          y += 10;
+        }
+      }); y += 2;
+    });
+    addPage(55); hline(y); y += 6;
+    doc.setFontSize(13); doc.setFont("helvetica", "bold"); doc.setTextColor(40, 40, 40);
+    doc.text("Resumen de Macros", M, y); y += 8;
+    const c2rgb = (c) => c === "#00E5A0" ? [0, 229, 160] : c === "#FFD93D" ? [255, 217, 61] : [255, 107, 107];
+    [[" Calorias totales", "~" + R.kcal + " kcal", [255, 140, 66]],
+    ["Proteina", "~" + Math.round(R.p) + "g (" + R.gkgMLG.toFixed(1) + " g/kg MLG) -> " + R.helmsZona, c2rgb(R.helmsColor)],
+    ["Carbohidratos", "~" + Math.round(R.c) + "g (" + R.carbPct + "%)", [255, 217, 61]],
+    ["Grasas", "~" + Math.round(R.f) + "g (" + R.fatPct + "%) -> " + R.fatZona + " (" + R.fatGkg.toFixed(2) + " g/kg)", c2rgb(R.fatZonaColor)]
+    ].forEach(([l, v, col]) => {
+      addPage(10);
+      doc.setFontSize(9); doc.setFont("helvetica", "normal"); doc.setTextColor(100, 100, 100); doc.text(l, M + 2, y);
+      doc.setFont("helvetica", "bold"); doc.setTextColor(...col); doc.text(v, M + 2, y + 5); y += 11;
+    });
+    addPage(12);
+    doc.setFillColor(108, 92, 231); doc.rect(M, y, CW * R.protPct / 100, 5, "F");
+    doc.setFillColor(255, 217, 61); doc.rect(M + CW * R.protPct / 100, y, CW * R.carbPct / 100, 5, "F");
+    doc.setFillColor(0, 184, 212); doc.rect(M + CW * (R.protPct + R.carbPct) / 100, y, CW * R.fatPct / 100, 5, "F");
+    y += 8;
+    doc.setFontSize(7); doc.setFont("helvetica", "normal");
+    doc.setTextColor(108, 92, 231); doc.text("Prot " + R.protPct + "%", M, y);
+    doc.setTextColor(200, 170, 0); doc.text("Carbs " + R.carbPct + "%", M + 35, y);
+    doc.setTextColor(0, 150, 180); doc.text("Grasa " + R.fatPct + "%", M + 70, y); y += 8;
+    if (R.gasto) {
+      addPage(45); hline(y); y += 6;
+      doc.setFontSize(13); doc.setFont("helvetica", "bold"); doc.setTextColor(40, 40, 40);
+      doc.text("Gasto y Deficit", M, y); y += 8;
+      const dr = [["Gasto total (WHOOP)", R.gasto + " kcal"], ["Ingesta", "~" + R.kcal + " kcal"],
+      ["Deficit", R.deficit > 0 ? "~" + R.deficit + " kcal (" + R.deficitPct + "%) -> " + R.defZona : "+" + Math.abs(R.deficit) + " kcal (superavit)"],
+      ["Perdida estimada", "~" + (R.kgSem > 0 ? R.kgSem.toFixed(2) : "0") + " kg grasa/sem"]];
+      if (R.eaVal !== null) dr.push(["Disponib. Energetica", R.eaVal.toFixed(0) + " kcal/kg MLG -> " + R.eaZona]);
+      dr.forEach(([l, v]) => {
+        addPage(9);
+        doc.setFontSize(9); doc.setFont("helvetica", "normal"); doc.setTextColor(100, 100, 100); doc.text(l, M + 2, y);
+        doc.setFont("helvetica", "bold"); doc.setTextColor(50, 50, 50); doc.text(v, M + 2, y + 5); y += 11;
+      });
+    }
+    addPage(30); hline(y); y += 6;
+    doc.setFontSize(11); doc.setFont("helvetica", "bold"); doc.setTextColor(40, 40, 40);
+    doc.text("Analisis", M, y); y += 7;
+    doc.setFontSize(8); doc.setFont("helvetica", "normal"); doc.setTextColor(70, 70, 70);
+    const an = [];
+    if (R.gkgMLG >= 2.3) an.push("+ Proteina optima (" + R.gkgMLG.toFixed(1) + " g/kg MLG). Sintesis maximizada.");
+    else if (R.gkgMLG >= 1.8) an.push("~ Proteina aceptable (" + R.gkgMLG.toFixed(1) + "). Helms recomienda >=2.3.");
+    else an.push("! Proteina BAJA (" + R.gkgMLG.toFixed(1) + "). Riesgo catabolismo.");
+    if (R.fatGkg < 0.5) an.push("! Grasa baja (~" + Math.round(R.f) + "g). Riesgo hormonal.");
+    else if (R.fatGkg < 0.8) an.push("~ Grasa aceptable (~" + Math.round(R.f) + "g). Hormonal cubierta.");
+    else an.push("+ Grasa adecuada (~" + Math.round(R.f) + "g). Hormonal protegida.");
+    if (R.gasto && R.deficit !== null) {
+      if (R.deficitPct > 42) an.push("! Deficit critico (" + R.deficitPct + "%). No sostenible >2-3 sem.");
+      else if (R.deficitPct > 38) an.push("~ Deficit limite (" + R.deficitPct + "%). Max 4-6 sem.");
+      else if (R.deficitPct > 30) an.push("-> Deficit agresivo (" + R.deficitPct + "%). 4-8 sem.");
+      else if (R.deficitPct > 0) an.push("+ Deficit conservador (" + R.deficitPct + "%). 8-12 sem.");
+      else an.push("-> Sin deficit. Mantenimiento/superavit.");
+    }
+    if (R.c < 50) an.push("~ Carbos <50g. Impacto cognitivo posible.");
+    if (R.eaVal !== null && R.eaVal < 25) an.push("! Disponibilidad energetica baja. RED-S.");
+    an.forEach(t => { addPage(7); const ls = doc.splitTextToSize(t, CW - 4); doc.text(ls, M + 2, y); y += ls.length * 4 + 2; });
+    const pg = doc.internal.getNumberOfPages();
+    for (let i = 1; i <= pg; i++) { doc.setPage(i); doc.setFontSize(7); doc.setTextColor(180, 180, 180); doc.text("Pag " + i + "/" + pg + "  |  Mi Dia Nutricional  |  " + fecha, W / 2, 292, { align: "center" }); }
+    doc.save("nutricion_" + hoy.getFullYear() + "-" + String(hoy.getMonth() + 1).padStart(2, "0") + "-" + String(hoy.getDate()).padStart(2, "0") + ".pdf");
+  };
+
+  // ===== IA: cargar el dia por lenguaje natural =====
+  const [apiKey, setApiKey] = useState(() => { try { return localStorage.getItem(AI_KEY_STORAGE) || ""; } catch(e){ return ""; } });
+  const [aiModel, setAiModel] = useState(() => { try { return localStorage.getItem(AI_MODEL_STORAGE) || "gpt-4o-mini"; } catch(e){ return "gpt-4o-mini"; } });
+  const [showAI, setShowAI] = useState(false);
+  const [showKeyBox, setShowKeyBox] = useState(false);
+  const [nlText, setNlText] = useState("");
+  const [aiLoading, setAiLoading] = useState(false);
+  const [aiError, setAiError] = useState("");
+  const [aiPreview, setAiPreview] = useState(null);
+  const [listening, setListening] = useState(false);
+  const [tipicoFlash, setTipicoFlash] = useState(false);
+  const recRef = useRef(null);
+
+  // ===== Editor de día típico + Nube =====
+  const [diaTipicoCustom, setDiaTipicoCustom] = useState(() => { try { const r = localStorage.getItem(TIPICO_CUSTOM_STORAGE); return r ? JSON.parse(r) : null; } catch(e){ return null; } });
+  const [syncCode, setSyncCode] = useState(() => { try { return localStorage.getItem(SYNC_CODE_STORAGE) || ""; } catch(e){ return ""; } });
+  const [autoSync, setAutoSync] = useState(() => { try { return localStorage.getItem(AUTOSYNC_STORAGE) === "1"; } catch(e){ return false; } });
+  const [lastSyncedAt, setLastSyncedAt] = useState(() => { try { return localStorage.getItem(LASTSYNC_STORAGE) || ""; } catch(e){ return ""; } });
+  const [showCloud, setShowCloud] = useState(false);
+  const [syncBusy, setSyncBusy] = useState(false);
+  const [syncMsg, setSyncMsg] = useState("");
+  const [syncMsgColor, setSyncMsgColor] = useState("#8899BB");
+  const cloudInit = useRef(false);
+  const [keyFlash, setKeyFlash] = useState(false);
+
+  useEffect(() => { try { localStorage.setItem(SYNC_CODE_STORAGE, syncCode); } catch(e){} }, [syncCode]);
+  useEffect(() => { try { localStorage.setItem(AUTOSYNC_STORAGE, autoSync ? "1" : "0"); } catch(e){} }, [autoSync]);
+  useEffect(() => { try { localStorage.setItem(LASTSYNC_STORAGE, lastSyncedAt || ""); } catch(e){} }, [lastSyncedAt]);
+  useEffect(() => { try { if (diaTipicoCustom) localStorage.setItem(TIPICO_CUSTOM_STORAGE, JSON.stringify(diaTipicoCustom)); else localStorage.removeItem(TIPICO_CUSTOM_STORAGE); } catch(e){} }, [diaTipicoCustom]);
+
+  const cargarDiaTipico = () => {
+    const base = diaTipicoCustom || DIA_TIPICO;
+    setSel(prev => ({ ...prev, ...base }));
+    setTipicoFlash(true);
+    setTimeout(() => setTipicoFlash(false), 1600);
+  };
+  const guardarComoTipico = () => {
+    setDiaTipicoCustom({ ...sel });
+    setSyncMsg("✓ Tu día típico ahora es el día actual"); setSyncMsgColor("#00E5A0");
+  };
+  const volverTipicoFabrica = () => {
+    setDiaTipicoCustom(null);
+    setSyncMsg("Volviste al día típico de fábrica"); setSyncMsgColor("#8899BB");
+  };
+
+  const mergeHistorial = (a, b) => {
+    const byDate = {};
+    [...(a||[]), ...(b||[])].forEach(h => { if (h && h.date) { if (!byDate[h.date] || (h.ts||0) > (byDate[h.date].ts||0)) byDate[h.date] = h; } });
+    return Object.values(byDate).sort((x,y) => (y.ts||0)-(x.ts||0)).slice(0, 30);
+  };
+
+  const cloudPost = async (payload) => {
+    const resp = await fetch(SYNC_URL, { method: "POST", headers: { "Content-Type": "text/plain" }, body: JSON.stringify(payload) });
+    if (!resp.ok) throw new Error("servidor " + resp.status);
+    return await resp.json();
+  };
+
+  const pushCloud = async (silent) => {
+    if (!syncCode.trim()) { if (!silent) { setSyncMsg("Poné un código de sync primero"); setSyncMsgColor("#FF8C42"); } return; }
+    setSyncBusy(true); if (!silent) { setSyncMsg("Subiendo..."); setSyncMsgColor("#8899BB"); }
+    try {
+      const now = new Date().toISOString();
+      const blob = { sel, gastoWhoop, history, diaTipicoCustom, _syncedAt: now, _v: 12 };
+      await cloudPost({ op: "set", code: syncCode.trim(), data: JSON.stringify(blob) });
+      setLastSyncedAt(now);
+      setSyncMsg("✓ Subido a la nube " + new Date().toLocaleTimeString("es-AR", { hour: "2-digit", minute: "2-digit" })); setSyncMsgColor("#00E5A0");
+    } catch(e) { console.error("[sync] push", e); setSyncMsg("Error subiendo: " + (e.message || e)); setSyncMsgColor("#FF6B6B"); }
+    finally { setSyncBusy(false); }
+  };
+
+  const pullCloud = async (silent) => {
+    if (!syncCode.trim()) { if (!silent) { setSyncMsg("Poné un código de sync primero"); setSyncMsgColor("#FF8C42"); } return; }
+    setSyncBusy(true); if (!silent) { setSyncMsg("Bajando..."); setSyncMsgColor("#8899BB"); }
+    try {
+      const r = await cloudPost({ op: "get", code: syncCode.trim() });
+      if (!r || !r.found || !r.data) { if (!silent) { setSyncMsg("Todavía no hay datos en la nube para ese código"); setSyncMsgColor("#FF8C42"); } setSyncBusy(false); return; }
+      const remote = JSON.parse(r.data);
+      const merged = mergeHistorial(history, remote.history);
+      setHistory(merged);
+      try { localStorage.setItem(HISTORY_KEY, JSON.stringify(merged)); } catch(e){}
+      const remoteTs = remote._syncedAt ? Date.parse(remote._syncedAt) : 0;
+      const localTs = lastSyncedAt ? Date.parse(lastSyncedAt) : 0;
+      if (!silent || remoteTs > localTs) {
+        if (remote.sel) setSel(remote.sel);
+        if (remote.gastoWhoop != null) setGastoWhoop(remote.gastoWhoop);
+        if (remote.diaTipicoCustom) setDiaTipicoCustom(remote.diaTipicoCustom);
+      }
+      setLastSyncedAt(remote._syncedAt || new Date().toISOString());
+      setSyncMsg("✓ Bajado de la nube · " + merged.length + " días en historial"); setSyncMsgColor("#00E5A0");
+    } catch(e) { console.error("[sync] pull", e); setSyncMsg("Error bajando: " + (e.message || e)); setSyncMsgColor("#FF6B6B"); }
+    finally { setSyncBusy(false); }
+  };
+
+  useEffect(() => {
+    if (cloudInit.current) return;
+    cloudInit.current = true;
+    if (autoSync && syncCode.trim()) pullCloud(true);
+  }, []);
+
+  // ===== ¿Cómo voy? (análisis intradía, basado en evidencia) =====
+  const [showComoVoy, setShowComoVoy] = useState(false);
+  const [cvCfg, setCvCfg] = useState(() => { try { const r = localStorage.getItem(COMOVOY_STORAGE); return r ? JSON.parse(r) : null; } catch(e){ return null; } });
+  const [nowH, setNowH] = useState(() => { const d = new Date(); return d.getHours() + d.getMinutes()/60; });
+  const cfg = cvCfg || { horarios: MEAL_HORARIOS_DEFAULT, wakeIni: 7, wakeFin: 23 };
+  useEffect(() => { const t = setInterval(() => { const d = new Date(); setNowH(d.getHours() + d.getMinutes()/60); }, 60000); return () => clearInterval(t); }, []);
+  useEffect(() => { if (cvCfg) { try { localStorage.setItem(COMOVOY_STORAGE, JSON.stringify(cvCfg)); } catch(e){} } }, [cvCfg]);
+  const setHorario = (k, val) => setCvCfg(prev => { const b = prev || { horarios: { ...MEAL_HORARIOS_DEFAULT }, wakeIni: 7, wakeFin: 23 }; return { ...b, horarios: { ...b.horarios, [k]: val } }; });
+  const setWake = (campo, val) => setCvCfg(prev => { const b = prev || { horarios: { ...MEAL_HORARIOS_DEFAULT }, wakeIni: 7, wakeFin: 23 }; return { ...b, [campo]: val }; });
+
+  const comoVoy = useMemo(() => {
+    const h = nowH;
+    const c = cvCfg || { horarios: MEAL_HORARIOS_DEFAULT, wakeIni: 7, wakeFin: 23 };
+    const horarios = c.horarios || MEAL_HORARIOS_DEFAULT;
+    let ingesta = 0, prot = 0, ultProtH = null;
+    Object.entries(mealTotals).forEach(([k, t]) => {
+      const hh = horarios[k] != null ? horarios[k] : 13;
+      if (hh <= h) {
+        ingesta += t.kcal; prot += t.p;
+        if (t.p > 0 && (ultProtH == null || hh > ultProtH)) ultProtH = hh;
+      }
+    });
+    const gasto = gastoWhoop ? parseInt(gastoWhoop) : null;
+    const wi = c.wakeIni != null ? c.wakeIni : 7;
+    const wf = c.wakeFin != null ? c.wakeFin : 23;
+    const frac = Math.max(0, Math.min(1, (h - wi) / Math.max(1, (wf - wi))));
+    const gastoAcum = gasto ? Math.round(gasto * frac) : null;
+    const balance = gastoAcum != null ? Math.round(ingesta - gastoAcum) : null;
+    let balZona = null, balColor = "#8899BB";
+    if (balance != null) {
+      if (balance >= -300) { balZona = "Al día"; balColor = "#00E5A0"; }
+      else if (balance >= -600) { balZona = "Atención"; balColor = "#FFD93D"; }
+      else { balZona = "Pozo calórico"; balColor = "#FF6B6B"; }
+    }
+    const horasSinProt = ultProtH != null ? +(h - ultProtH).toFixed(1) : null;
+    const protAlerta = ultProtH != null && (h - ultProtH) > 4.5 && h < (wf - 0.5);
+    return { h, ingesta: Math.round(ingesta), prot: Math.round(prot), gasto, gastoAcum, balance, balZona, balColor, horasSinProt, protAlerta };
+  }, [mealTotals, gastoWhoop, cvCfg, nowH]);
+
+  useEffect(() => { try { localStorage.setItem(AI_KEY_STORAGE, apiKey); } catch(e){} }, [apiKey]);
+  useEffect(() => { try { localStorage.setItem(AI_MODEL_STORAGE, aiModel); } catch(e){} }, [aiModel]);
+
+  const aiSections = useMemo(() => {
+    const arr = [];
+    Object.entries(MEALS).forEach(([mk, meal]) => {
+      meal.sections.forEach(sec => {
+        const zero = sec.options.find(o => o.kcal === 0);
+        arr.push({
+          meal: meal.label, seccion: sec.label, key: sec.key,
+          nada: zero ? zero.id : null,
+          opciones: sec.options.map(o => ({ id: o.id, label: o.label, kcal: o.kcal, p: o.p, c: o.c, f: o.f }))
+        });
+      });
+    });
+    return arr;
+  }, []);
+
+  const dictar = () => {
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SR) { setAiError("Tu navegador no soporta dictado por voz. Escribilo a mano."); return; }
+    if (listening) { try { recRef.current && recRef.current.stop(); } catch(e){} return; }
+    try {
+      const rec = new SR();
+      rec.lang = "es-AR"; rec.continuous = true; rec.interimResults = true;
+      const base = nlText ? nlText.trim() + " " : "";
+      rec.onresult = (ev) => {
+        let txt = "";
+        for (let i = 0; i < ev.results.length; i++) txt += ev.results[i][0].transcript;
+        setNlText(base + txt);
+      };
+      rec.onend = () => setListening(false);
+      rec.onerror = (e) => { setListening(false); if (e.error === 'not-allowed' || e.error === 'service-not-allowed') setAiError("Edge bloqueo el microfono (suele pasar abriendo el archivo como file://). Escribi a mano o servila desde un servidor local."); };
+      recRef.current = rec; rec.start(); setListening(true); setAiError("");
+    } catch(e) { setListening(false); setAiError("No pude iniciar el dictado: " + e.message); }
+  };
+
+  const interpretarDia = async () => {
+    setAiError(""); setAiPreview(null);
+    if (!apiKey.trim()) { setAiError("Falta tu API key de OpenAI. Toca la rueda y pegala."); setShowKeyBox(true); return; }
+    if (!nlText.trim()) { setAiError("Escribi o dicta lo que comiste hoy."); return; }
+    setAiLoading(true);
+    try {
+      const schema = { type: "object", additionalProperties: false, properties: {}, required: [] };
+      aiSections.forEach(sec => {
+        schema.properties[sec.key] = { type: "string", enum: sec.opciones.map(o => o.id) };
+        schema.required.push(sec.key);
+      });
+      const catalogo = aiSections.map(sc => ({
+        key: sc.key, meal: sc.meal, seccion: sc.seccion, nada: sc.nada,
+        opciones: sc.opciones.map(o => o.id + " = " + o.label + " (" + o.kcal + "kcal P" + o.p + " C" + o.c + " G" + o.f + ")")
+      }));
+      const body = {
+        model: aiModel, temperature: 0,
+        messages: [
+          { role: "system", content: AI_SYSTEM_PROMPT + "\n\n" + DIA_TIPICO_TEXTO + "\nReglas dia tipico: si el usuario dice 'lo de siempre' / 'mi dia normal' / 'como siempre', o no aclara cantidades, usa las de su dia tipico. Si solo describe algunas comidas, carga SOLO esas (el resto en 'nada'). Si describe algo distinto al tipico, respeta lo que dice.\n\nCATALOGO (elegi un id por cada key):\n" + JSON.stringify(catalogo) },
+          { role: "user", content: nlText.trim() }
+        ],
+        response_format: { type: "json_schema", json_schema: { name: "dia", strict: true, schema } }
+      };
+      console.log("[IA] enviando a OpenAI", { model: aiModel, texto: nlText.trim() });
+      const resp = await fetch("https://api.openai.com/v1/chat/completions", {
+        method: "POST",
+        headers: { "Authorization": "Bearer " + apiKey.trim(), "Content-Type": "application/json" },
+        body: JSON.stringify(body)
+      });
+      if (!resp.ok) { const t = await resp.text(); throw new Error("OpenAI " + resp.status + ": " + t.slice(0, 300)); }
+      const data = await resp.json();
+      const content = data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content;
+      console.log("[IA] respuesta cruda", content);
+      const parsed = JSON.parse(content);
+      const clean = {};
+      aiSections.forEach(sec => {
+        const v = parsed[sec.key];
+        const ok = sec.opciones.find(o => o.id === v);
+        clean[sec.key] = ok ? v : (sec.nada || sel[sec.key]);
+      });
+      setAiPreview(clean);
+    } catch(e) {
+      console.error("[IA] error", e);
+      setAiError((e && e.message) ? e.message : "Error llamando a OpenAI");
+    } finally { setAiLoading(false); }
+  };
+
+  const aplicarIA = () => {
+    if (!aiPreview) return;
+    const soloReconocido = {};
+    aiSections.forEach(sec => {
+      const opt = sec.opciones.find(o => o.id === aiPreview[sec.key]);
+      if (opt && opt.kcal > 0) soloReconocido[sec.key] = aiPreview[sec.key];
+    });
+    setSel(prev => ({ ...prev, ...soloReconocido }));
+    setAiPreview(null); setShowAI(false); setNlText("");
+  };
+
+  const previewLista = useMemo(() => {
+    if (!aiPreview) return [];
+    const out = [];
+    aiSections.forEach(sec => {
+      const opt = sec.opciones.find(o => o.id === aiPreview[sec.key]);
+      if (opt && opt.kcal > 0) out.push({ seccion: sec.meal + " · " + sec.seccion, label: opt.label });
+    });
+    return out;
+  }, [aiPreview]);
+
+  const s = {
+    wrap: { maxWidth: 520, margin: "0 auto", padding: "16px 12px 80px" },
+    title: { fontSize: 22, fontWeight: 800, color: "#fff", marginBottom: 4, letterSpacing: -0.5 },
+    sub: { fontSize: 13, color: "#6C5CE7", marginBottom: 20 },
+    meal: { background: "#131D35", borderRadius: 10, padding: "14px 14px 10px", marginBottom: 12 },
+    mealHead: { fontSize: 15, fontWeight: 700, color: "#fff", margin: 0 },
+    secLabel: { fontSize: 11, color: "#8899BB", marginBottom: 5, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5 },
+    optGrid: { display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 12 },
+    opt: (active, color) => ({
+      padding: "7px 12px", borderRadius: 8, fontSize: 12, fontWeight: active ? 700 : 500,
+      background: active ? (color || "#1A2744") : "#0B1120",
+      color: active ? "#fff" : "#8899BB",
+      border: active ? "1.5px solid " + (color || "#6C5CE7") : "1.5px solid #1A2744",
+      whiteSpace: "nowrap",
+      boxShadow: active ? "0 0 0 1px " + (color || "#6C5CE7") + "44, 0 2px 12px " + (color || "#6C5CE7") + "22" : "none"
+    }),
+    results: { background: "#131D35", borderRadius: 12, padding: 16, marginTop: 8, border: "1px solid #1A2744" },
+    resTitle: { fontSize: 17, fontWeight: 800, color: "#fff", marginBottom: 12 },
+    row: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "6px 0", borderBottom: "1px solid #1A274444" },
+    rowLabel: { fontSize: 13, color: "#8899BB" },
+    rowVal: (c) => ({ fontSize: 15, fontWeight: 700, color: c || "#fff" }),
+    macroBar: { display: "flex", height: 12, borderRadius: 6, overflow: "hidden", marginTop: 6, marginBottom: 10 },
+    badge: (c) => ({ display: "inline-block", padding: "3px 10px", borderRadius: 6, fontSize: 11, fontWeight: 700, background: c + "22", color: c, marginLeft: 6 }),
+    note: { fontSize: 12, color: "#8899BB", lineHeight: 1.6, marginTop: 12, padding: "10px 12px", background: "#0B1120", borderRadius: 8 },
+    divider: { height: 1, background: "#1A2744", margin: "10px 0" },
+    whoopBox: { background: "#131D35", borderRadius: 12, padding: 16, marginTop: 12, border: "1.5px solid #6C5CE7" },
+    whoopLabel: { fontSize: 13, color: "#6C5CE7", fontWeight: 700, marginBottom: 8 },
+    whoopRow: { display: "flex", alignItems: "center", gap: 12 },
+    whoopUnit: { fontSize: 13, color: "#8899BB", fontWeight: 600 },
+    noGasto: { fontSize: 12, color: "#FF8C42", fontStyle: "italic", marginTop: 6 },
+    v4badge: { display: "inline-block", fontSize: 7, fontWeight: 700, color: "#FF8C42", background: "#FF8C4218", padding: "1px 4px", borderRadius: 3, marginRight: 3, verticalAlign: "middle" },
+  };
+
+  const sectionColors = {
+    des_carb: "#FFD93D", des_prot: "#00E5A0", mm_snack: "#FF8C42",
+    alm_prot: "#00B8D4", alm_hort: "#00E5A0", alm_aceite: "#FFD93D", alm_colores: "#FF8C42", alm_energ: "#FF8C42",
+    mer_carb: "#FFD93D", mer_prot: "#00E5A0",
+    cena_prot: "#00B8D4", cena_hort: "#00E5A0", cena_aceite: "#FFD93D", cena_colores: "#FF8C42", cena_energ: "#FF8C42",
+    frutas_extra: "#FFD93D", choco: "#8B4513",
+    add_batata_a: "#FF8C42", add_huevos1_a: "#00E5A0", add_huevos2_a: "#00E5A0",
+    add_batata_c: "#FF8C42", add_huevos1_c: "#00E5A0", add_huevos2_c: "#00E5A0",
+    leche_ml: "#00B8D4",
+    huevos_extra1: "#00E5A0", huevos_extra2: "#00E5A0",
+  };
+
+  const R = results;
+
+  return (
+    <div style={s.wrap}>
+      {/* FLOATING SIDEBAR */}
+      <div className="day-sidebar">
+        <div style={{fontSize:8,color:"#8899BB",fontWeight:700,letterSpacing:1,marginBottom:10,textAlign:"center"}}>HOY</div>
+        <div style={{textAlign:"center",marginBottom:10}}>
+          <div style={{fontSize:22,fontWeight:800,color:"#FF8C42",lineHeight:1}}>{R.kcal}</div>
+          <div style={{fontSize:7,color:"#8899BB",letterSpacing:0.5}}>KCAL</div>
+        </div>
+        <div style={{height:1,background:"#1A2744",margin:"0 -4px 8px"}}/>
+        <div style={{textAlign:"center",marginBottom:8}}>
+          <div style={{fontSize:16,fontWeight:800,color:R.helmsColor,lineHeight:1}}>{Math.round(R.p)}<span style={{fontSize:9,opacity:0.6}}>g</span></div>
+          <div style={{fontSize:7,color:"#8899BB"}}>PROT</div>
+        </div>
+        <div style={{textAlign:"center",marginBottom:8}}>
+          <div style={{fontSize:14,fontWeight:700,color:"#FFD93D",lineHeight:1}}>{Math.round(R.c)}<span style={{fontSize:9,opacity:0.6}}>g</span></div>
+          <div style={{fontSize:7,color:"#8899BB"}}>CARBS</div>
+        </div>
+        <div style={{textAlign:"center",marginBottom:4}}>
+          <div style={{fontSize:14,fontWeight:700,color:"#00B8D4",lineHeight:1}}>{Math.round(R.f)}<span style={{fontSize:9,opacity:0.6}}>g</span></div>
+          <div style={{fontSize:7,color:"#8899BB"}}>GRASA</div>
+        </div>
+        {R.gasto && <>
+          <div style={{height:1,background:"#1A2744",margin:"6px -4px 8px"}}/>
+          <div style={{textAlign:"center"}}>
+            <div style={{fontSize:16,fontWeight:800,color:R.defColor,lineHeight:1}}>{R.deficit>0?R.deficit:"+"+Math.abs(R.deficit)}</div>
+            <div style={{fontSize:7,color:"#8899BB"}}>DEF</div>
+          </div>
+        </>}
+      </div>
+
+      {/* HEADER */}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, marginBottom: 8 }}>
+        <div>
+          <div style={s.title}>Mi Dia Nutricional</div>
+          <div style={s.sub}>Selecciona lo que comiste hoy <span style={{ fontSize: 10, color: "#FF8C42" }}>| V4 incluida</span></div>
+        </div>
+        <button className="btn" onClick={resetAll} style={{
+          background: "transparent", color: "#FF6B6B", border: "1.5px solid #FF6B6B44",
+          borderRadius: 8, padding: "7px 12px", fontSize: 11, fontWeight: 700,
+          letterSpacing: 0.5, textTransform: "uppercase", whiteSpace: "nowrap", marginTop: 4
+        }}>
+          Limpiar todo
+        </button>
+      </div>
+
+      {/* ===== IA: CARGAR HABLANDO ===== */}
+      <div style={{ background: "linear-gradient(135deg,#1a1340,#131D35)", border: "1.5px solid #6C5CE7", borderRadius: 12, marginBottom: 12, overflow: "hidden" }}>
+        {!showAI ? (
+          <div style={{ display: "flex", gap: 8, padding: 8 }}>
+            <button className="btn" onClick={cargarDiaTipico} style={{
+              flex: 1, background: tipicoFlash ? "#00E5A0" : "linear-gradient(135deg,#00B8D4,#0097A7)", color: tipicoFlash ? "#0B1120" : "#fff", border: "none",
+              borderRadius: 9, padding: "12px 8px", fontSize: 13, fontWeight: 800, display: "flex", alignItems: "center", justifyContent: "center", gap: 6
+            }}>
+              {tipicoFlash ? "✓ Cargado" : "📋 Mi día típico"}
+            </button>
+            <button className="btn" onClick={() => setShowAI(true)} style={{
+              flex: 1, background: "transparent", color: "#fff", border: "1.5px solid #6C5CE7",
+              borderRadius: 9, padding: "12px 8px", fontSize: 13, fontWeight: 800, display: "flex", alignItems: "center", justifyContent: "center", gap: 6
+            }}>
+              <span style={{ fontSize: 16 }}>✨</span> Hablando
+            </button>
+            <button className="btn" onClick={() => setShowCloud(!showCloud)} title="Nube y día típico" style={{
+              background: showCloud ? "#00B8D4" : "transparent", color: showCloud ? "#fff" : "#00B8D4", border: "1.5px solid #00B8D4",
+              borderRadius: 9, padding: "12px 12px", fontSize: 15, fontWeight: 800, display: "flex", alignItems: "center", justifyContent: "center"
+            }}>
+              ☁️
+            </button>
+          </div>
+        ) : (
+          <div className="fade-in" style={{ padding: 14 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+              <div style={{ fontSize: 14, fontWeight: 800, color: "#fff" }}>✨ Cargá tu día hablando</div>
+              <div style={{ display: "flex", gap: 6 }}>
+                <button className="btn" onClick={() => setShowKeyBox(!showKeyBox)} title="API key y modelo" style={{ background: "transparent", border: "1px solid #1A2744", borderRadius: 6, color: apiKey ? "#00E5A0" : "#FF8C42", padding: "4px 8px", fontSize: 13 }}>⚙️</button>
+                <button className="btn" onClick={() => { setShowAI(false); setAiPreview(null); setAiError(""); }} style={{ background: "transparent", border: "1px solid #1A2744", borderRadius: 6, color: "#8899BB", padding: "4px 9px", fontSize: 13 }}>✕</button>
+              </div>
+            </div>
+
+            {showKeyBox && (
+              <div style={{ marginBottom: 10, padding: "10px 12px", background: "#0B1120", borderRadius: 8 }}>
+                <div style={{ fontSize: 10, color: "#8899BB", marginBottom: 6 }}>Tu API key de OpenAI (se guarda solo en esta PC):</div>
+                <input type="password" value={apiKey} onChange={e => setApiKey(e.target.value)} placeholder="sk-..." style={{ width: "100%", marginBottom: 8 }} />
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <span style={{ fontSize: 10, color: "#8899BB" }}>Modelo:</span>
+                  <select value={aiModel} onChange={e => setAiModel(e.target.value)} style={{ background: "#0B1120", color: "#fff", border: "1.5px solid #1A2744", borderRadius: 6, padding: "5px 8px", fontSize: 12 }}>
+                    <option value="gpt-4o-mini">gpt-4o-mini (barato)</option>
+                    <option value="gpt-4o">gpt-4o (mejor)</option>
+                  </select>
+                </div>
+              </div>
+            )}
+
+            <textarea value={nlText} onChange={e => setNlText(e.target.value)} placeholder="Ej: desayuné 2 huevos con 8 claras y avena, almorcé pechuga 180g con ensalada y papa, merendé un scoop de whey con una fruta, cené pescado con verduras..." rows={4} style={{ width: "100%", background: "#0B1120", border: "1.5px solid #1A2744", color: "#fff", borderRadius: 8, padding: "10px 12px", fontSize: 13, fontWeight: 500, resize: "vertical", fontFamily: "inherit", outline: "none", boxSizing: "border-box" }} />
+
+            <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+              <button className="btn" onClick={dictar} style={{ background: listening ? "#FF6B6B" : "transparent", color: listening ? "#fff" : "#6C5CE7", border: "1.5px solid " + (listening ? "#FF6B6B" : "#6C5CE7"), borderRadius: 8, padding: "10px 14px", fontSize: 13, fontWeight: 700, whiteSpace: "nowrap" }}>
+                {listening ? "⏹ Detener" : "🎤 Dictar"}
+              </button>
+              <button className="btn" onClick={interpretarDia} disabled={aiLoading} style={{ flex: 1, background: aiLoading ? "#1A2744" : "linear-gradient(135deg,#6C5CE7,#4834d4)", color: "#fff", border: "none", borderRadius: 8, padding: "10px 16px", fontSize: 13, fontWeight: 800, opacity: aiLoading ? 0.7 : 1 }}>
+                {aiLoading ? "Interpretando..." : "Interpretar con IA"}
+              </button>
+            </div>
+
+            {listening && <div style={{ fontSize: 11, color: "#FF8C42", marginTop: 6, fontStyle: "italic" }}>Escuchando... hablá y después tocá Detener.</div>}
+            {aiError && <div style={{ fontSize: 12, color: "#FF6B6B", marginTop: 8, padding: "8px 10px", background: "#FF6B6B11", borderRadius: 6 }}>{aiError}</div>}
+
+            {aiPreview && (
+              <div style={{ marginTop: 12, padding: 12, background: "#0B1120", borderRadius: 8, border: "1px solid #00E5A044" }} className="fade-in">
+                <div style={{ fontSize: 12, fontWeight: 700, color: "#00E5A0", marginBottom: 8 }}>Esto entendí — revisalo antes de aplicar:</div>
+                {previewLista.length === 0 ? (
+                  <div style={{ fontSize: 12, color: "#FF8C42", fontStyle: "italic" }}>No reconocí comidas con valor. Probá describiendo con más detalle.</div>
+                ) : previewLista.map((it, i) => (
+                  <div key={i} style={{ display: "flex", justifyContent: "space-between", gap: 10, fontSize: 12, padding: "4px 0", borderBottom: "1px solid #1A274444" }}>
+                    <span style={{ color: "#8899BB" }}>{it.seccion}</span>
+                    <span style={{ color: "#fff", fontWeight: 600, textAlign: "right" }}>{it.label}</span>
+                  </div>
+                ))}
+                <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+                  <button className="btn" onClick={() => setAiPreview(null)} style={{ flex: 1, background: "transparent", color: "#8899BB", border: "1.5px solid #1A2744", borderRadius: 8, padding: 10, fontSize: 13, fontWeight: 700 }}>Descartar</button>
+                  <button className="btn" onClick={aplicarIA} style={{ flex: 2, background: "linear-gradient(135deg,#00E5A0,#00B871)", color: "#0B1120", border: "none", borderRadius: 8, padding: 10, fontSize: 13, fontWeight: 800 }}>Aplicar a mi día</button>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {showCloud && (
+        <div className="fade-in" style={{ background: "#131D35", border: "1.5px solid #00B8D4", borderRadius: 12, padding: 14, marginBottom: 12 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+            <div style={{ fontSize: 14, fontWeight: 800, color: "#fff" }}>☁️ Nube y ajustes</div>
+            <button className="btn" onClick={() => setShowCloud(false)} style={{ background: "transparent", border: "1px solid #1A2744", borderRadius: 6, color: "#8899BB", padding: "4px 9px", fontSize: 13 }}>✕</button>
+          </div>
+          <div style={{ fontSize: 11, color: "#8899BB", marginBottom: 6 }}>Tu código de sync (usá el MISMO en tu compu y tu celu):</div>
+          <input type="text" value={syncCode} onChange={e => setSyncCode(e.target.value)} placeholder="ej: gaston-nutri-2026" style={{ width: "100%", marginBottom: 10, boxSizing: "border-box" }} />
+          <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
+            <button className="btn" onClick={() => pushCloud(false)} disabled={syncBusy} style={{ flex: 1, background: "linear-gradient(135deg,#00B8D4,#0097A7)", color: "#fff", border: "none", borderRadius: 8, padding: "11px", fontSize: 13, fontWeight: 800, opacity: syncBusy ? 0.6 : 1 }}>⬆️ Subir</button>
+            <button className="btn" onClick={() => pullCloud(false)} disabled={syncBusy} style={{ flex: 1, background: "transparent", color: "#00B8D4", border: "1.5px solid #00B8D4", borderRadius: 8, padding: "11px", fontSize: 13, fontWeight: 800, opacity: syncBusy ? 0.6 : 1 }}>⬇️ Bajar</button>
+          </div>
+          <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, color: "#C8D6E5", cursor: "pointer" }}>
+            <input type="checkbox" checked={autoSync} onChange={e => setAutoSync(e.target.checked)} style={{ width: 16, height: 16, accentColor: "#00B8D4" }} />
+            Auto-sincronizar (sube al guardar el día, baja al abrir)
+          </label>
+          {syncMsg && <div style={{ fontSize: 12, color: syncMsgColor, marginTop: 8, padding: "6px 8px", background: "#0B1120", borderRadius: 6 }}>{syncMsg}</div>}
+          <div style={{ height: 1, background: "#1A2744", margin: "12px 0" }} />
+          <div style={{ fontSize: 14, fontWeight: 800, color: "#fff", marginBottom: 6 }}>🔑 IA — API key de OpenAI</div>
+          <div style={{ fontSize: 11, color: "#8899BB", marginBottom: 6 }}>Para "Cargá hablando". Se guarda solo en esta PC.</div>
+          <input type="password" value={apiKey} onChange={e => setApiKey(e.target.value)} placeholder="sk-..." style={{ width: "100%", marginBottom: 8, boxSizing: "border-box" }} />
+          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            <select value={aiModel} onChange={e => setAiModel(e.target.value)} style={{ background: "#0B1120", color: "#fff", border: "1.5px solid #1A2744", borderRadius: 6, padding: "8px", fontSize: 12 }}>
+              <option value="gpt-4o-mini">gpt-4o-mini (barato)</option>
+              <option value="gpt-4o">gpt-4o (mejor)</option>
+            </select>
+            <button className="btn" onClick={() => { setKeyFlash(true); setTimeout(() => setKeyFlash(false), 1600); }} style={{ flex: 1, background: keyFlash ? "#00E5A0" : "linear-gradient(135deg,#6C5CE7,#4834d4)", color: keyFlash ? "#0B1120" : "#fff", border: "none", borderRadius: 8, padding: "9px", fontSize: 13, fontWeight: 800 }}>
+              {keyFlash ? "✓ Guardada" : "Guardar API key"}
+            </button>
+          </div>
+          <div style={{ height: 1, background: "#1A2744", margin: "12px 0" }} />
+          <div style={{ fontSize: 14, fontWeight: 800, color: "#fff", marginBottom: 6 }}>📋 Mi día típico</div>
+          <div style={{ fontSize: 11, color: "#8899BB", marginBottom: 8 }}>
+            {diaTipicoCustom ? "Estás usando un día típico personalizado (el que guardaste)." : "Estás usando el día típico de fábrica."}
+          </div>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <button className="btn" onClick={guardarComoTipico} style={{ flex: 1, minWidth: 180, background: "linear-gradient(135deg,#6C5CE7,#4834d4)", color: "#fff", border: "none", borderRadius: 8, padding: "10px", fontSize: 12, fontWeight: 700 }}>Guardar día actual como típico</button>
+            {diaTipicoCustom && <button className="btn" onClick={volverTipicoFabrica} style={{ background: "transparent", color: "#8899BB", border: "1.5px solid #1A2744", borderRadius: 8, padding: "10px 12px", fontSize: 12, fontWeight: 700 }}>Volver a fábrica</button>}
+          </div>
+        </div>
+      )}
+
+      {/* ===== ¿CÓMO VOY? ===== */}
+      <button className="btn" onClick={() => setShowComoVoy(!showComoVoy)} style={{
+        width: "100%", background: "linear-gradient(135deg,#131D35,#0F1A35)", color: "#fff",
+        border: "1.5px solid " + (comoVoy.balColor || "#1A2744"), borderRadius: 12, padding: "12px 14px", marginBottom: 12,
+        fontSize: 14, fontWeight: 800, display: "flex", alignItems: "center", justifyContent: "space-between"
+      }}>
+        <span>⏱️ ¿Cómo voy? <span style={{ fontSize: 11, color: "#8899BB", fontWeight: 600 }}>· {fmtHora(comoVoy.h)}</span></span>
+        {comoVoy.balZona && <span style={{ fontSize: 11, fontWeight: 700, color: comoVoy.balColor, background: comoVoy.balColor + "22", padding: "2px 8px", borderRadius: 6 }}>{comoVoy.balZona}</span>}
+      </button>
+
+      {showComoVoy && (
+        <div className="fade-in" style={{ background: "#131D35", border: "1.5px solid #1A2744", borderRadius: 12, padding: 14, marginBottom: 12 }}>
+          <div style={{ fontSize: 13, color: "#C8D6E5", lineHeight: 1.5, marginBottom: 12, padding: "10px 12px", background: "#0B1120", borderRadius: 8, borderLeft: "3px solid " + (comoVoy.balColor || "#8899BB") }}>
+            {comoVoy.balance == null
+              ? "Cargá tu gasto del día (WHOOP, abajo) para ver el balance de esta hora. Igual te muestro el ritmo de proteína."
+              : comoVoy.balZona === "Al día"
+              ? "Vas bien alimentado para la hora — esto NO es déficit, es lo esperable a las " + fmtHora(comoVoy.h) + "."
+              : comoVoy.balZona === "Atención"
+              ? "Empezás a quedar corto para la hora. Si tenés una comida cerca, metela."
+              : "Venís en un pozo calórico para la hora. Comé algo ahora; el déficit grande sostenido (cortisol, músculo) no ayuda aunque el día cierre."}
+          </div>
+
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 12 }}>
+            <div style={{ background: "#0B1120", borderRadius: 10, padding: "10px 12px" }}>
+              <div style={{ fontSize: 9, color: "#8899BB", fontWeight: 700, letterSpacing: 1 }}>BALANCE A ESTA HORA</div>
+              <div style={{ fontSize: 24, fontWeight: 800, color: comoVoy.balColor, lineHeight: 1.2 }}>{comoVoy.balance == null ? "—" : (comoVoy.balance > 0 ? "+" + comoVoy.balance : comoVoy.balance)}</div>
+              <div style={{ fontSize: 9, color: "#8899BB" }}>{comoVoy.balance == null ? "sin gasto cargado" : "comido " + comoVoy.ingesta + " − gasto " + comoVoy.gastoAcum}</div>
+            </div>
+            <div style={{ background: "#0B1120", borderRadius: 10, padding: "10px 12px" }}>
+              <div style={{ fontSize: 9, color: "#8899BB", fontWeight: 700, letterSpacing: 1 }}>PROTEÍNA HASTA AHORA</div>
+              <div style={{ fontSize: 24, fontWeight: 800, color: "#6C5CE7", lineHeight: 1.2 }}>{comoVoy.prot}<span style={{ fontSize: 12 }}>g</span></div>
+              <div style={{ fontSize: 9, color: comoVoy.protAlerta ? "#FF8C42" : "#8899BB" }}>{comoVoy.horasSinProt != null ? (comoVoy.protAlerta ? "hace " + comoVoy.horasSinProt + "h sin proteína" : "última hace " + comoVoy.horasSinProt + "h") : "sin proteína aún"}</div>
+            </div>
+          </div>
+
+          {comoVoy.protAlerta && <div style={{ fontSize: 12, color: "#FF8C42", marginBottom: 10, padding: "8px 10px", background: "#FF8C4218", borderRadius: 6 }}>🥩 Pasaron {comoVoy.horasSinProt}h sin proteína. La síntesis muscular se maximiza repartiendo ~25-30g cada 3-4h.</div>}
+
+          <div style={{ fontSize: 10, color: "#8899BB", lineHeight: 1.5, marginBottom: 12, fontStyle: "italic" }}>
+            Umbral −300 kcal: Deutz &amp; Benardot (2000) — más horas en déficit &gt;300 kcal se asocian a más grasa corporal, aunque el día cierre en balance.
+          </div>
+
+          <details>
+            <summary style={{ fontSize: 12, color: "#6C5CE7", fontWeight: 700, cursor: "pointer", userSelect: "none" }}>⚙️ Ajustar horarios y ventana de actividad</summary>
+            <div style={{ marginTop: 10 }}>
+              {COMIDAS_PRINCIPALES.map(([k, label]) => (
+                <div key={k} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                  <span style={{ fontSize: 12, color: "#C8D6E5" }}>{label}</span>
+                  <input type="time" value={fmtHora(cfg.horarios[k] != null ? cfg.horarios[k] : MEAL_HORARIOS_DEFAULT[k])} onChange={e => { const p = e.target.value.split(":").map(Number); setHorario(k, p[0] + (p[1]||0)/60); }} style={{ background: "#0B1120", color: "#fff", border: "1.5px solid #1A2744", borderRadius: 6, padding: "5px 8px", fontSize: 12 }} />
+                </div>
+              ))}
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 8, paddingTop: 8, borderTop: "1px solid #1A2744" }}>
+                <span style={{ fontSize: 12, color: "#C8D6E5" }}>Despierto de</span>
+                <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                  <input type="time" value={fmtHora(cfg.wakeIni != null ? cfg.wakeIni : 7)} onChange={e => { const p = e.target.value.split(":").map(Number); setWake("wakeIni", p[0] + (p[1]||0)/60); }} style={{ background: "#0B1120", color: "#fff", border: "1.5px solid #1A2744", borderRadius: 6, padding: "5px 8px", fontSize: 12 }} />
+                  <span style={{ fontSize: 11, color: "#8899BB" }}>a</span>
+                  <input type="time" value={fmtHora(cfg.wakeFin != null ? cfg.wakeFin : 23)} onChange={e => { const p = e.target.value.split(":").map(Number); setWake("wakeFin", p[0] + (p[1]||0)/60); }} style={{ background: "#0B1120", color: "#fff", border: "1.5px solid #1A2744", borderRadius: 6, padding: "5px 8px", fontSize: 12 }} />
+                </div>
+              </div>
+            </div>
+          </details>
+        </div>
+      )}
+
+      {/* STICKY BAR */}
+      <div className="sticky-bar" style={{ padding: "10px 12px", margin: "0 -12px 12px", display: "flex", gap: 0, justifyContent: "space-around", alignItems: "center" }}>
+        <div style={{ textAlign: "center", flex: 1 }}>
+          <div style={{ fontSize: 9, color: "#8899BB", fontWeight: 700, letterSpacing: 1 }}>KCAL</div>
+          <div style={{ fontSize: 22, fontWeight: 800, color: "#FF8C42", lineHeight: 1.1 }}>{R.kcal}</div>
+        </div>
+        <div style={{ width: 1, height: 28, background: "#1A2744" }} />
+        <div style={{ textAlign: "center", flex: 1 }}>
+          <div style={{ fontSize: 9, color: "#8899BB", fontWeight: 700, letterSpacing: 1 }}>PROT</div>
+          <div style={{ fontSize: 22, fontWeight: 800, color: R.helmsColor, lineHeight: 1.1 }}>{Math.round(R.p)}<span style={{ fontSize: 12, opacity: 0.6 }}>g</span></div>
+          <div style={{ fontSize: 8, color: "#8899BB" }}>{R.gkgMLG.toFixed(1)} g/kg</div>
+        </div>
+        <div style={{ width: 1, height: 28, background: "#1A2744" }} />
+        <div style={{ textAlign: "center", flex: 1 }}>
+          <div style={{ fontSize: 9, color: "#8899BB", fontWeight: 700, letterSpacing: 1 }}>{R.gasto ? "DEFICIT" : "GASTO"}</div>
+          <div style={{ fontSize: 22, fontWeight: 800, color: R.gasto ? R.defColor : "#8899BB", lineHeight: 1.1 }}>
+            {R.gasto ? (R.deficit > 0 ? R.deficit : "+" + Math.abs(R.deficit)) : "—"}
+          </div>
+          <div style={{ fontSize: 8, color: "#8899BB" }}>{R.gasto ? R.deficitPct + "%" : "sin gasto"}</div>
+        </div>
+      </div>
+
+      {/* SEARCH / V4 FILTER */}
+      <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
+        <input type="text" placeholder="Buscar opcion..." value={searchQuery} onChange={e => setSearchQuery(e.target.value)} style={{ flex: 1 }} />
+        <button className="btn" onClick={() => setOnlyV4(!onlyV4)} style={{
+          background: onlyV4 ? "#FF8C42" : "transparent", color: onlyV4 ? "#fff" : "#FF8C42",
+          border: "1.5px solid #FF8C42", borderRadius: 8, padding: "8px 14px", fontSize: 12, fontWeight: 700
+        }}>
+          V4
+        </button>
+      </div>
+
+      {/* MEALS */}
+      {Object.entries(MEALS).map(([mealKey, meal]) => {
+        const mt = mealTotals[mealKey];
+        return (
+          <div key={mealKey} style={s.meal}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+              <div style={s.mealHead}>{meal.icon} {meal.label}</div>
+              {mt.kcal > 0 && (
+                <div style={{ fontSize: 10, color: "#8899BB", fontWeight: 600, textAlign: "right" }}>
+                  <span style={{ color: "#FF8C42" }}>{mt.kcal}</span> <span style={{ opacity: 0.5, marginRight: 4 }}>kcal</span>
+                  <span style={{ color: "#6C5CE7" }}>{Math.round(mt.p)}</span><span style={{ opacity: 0.4 }}>p </span>
+                  <span style={{ color: "#FFD93D" }}>{Math.round(mt.c)}</span><span style={{ opacity: 0.4 }}>c </span>
+                  <span style={{ color: "#00B8D4" }}>{Math.round(mt.f)}</span><span style={{ opacity: 0.4 }}>g</span>
+                </div>
+              )}
+            </div>
+            {meal.sections.map(section => {
+              const visible = section.options.filter(o => optVisible(o, section.key));
+              return (
+                <div key={section.key}>
+                  <div style={s.secLabel}>{section.label}</div>
+                  <div style={s.optGrid}>
+                    {visible.length === 0 ? (
+                      <div style={{ fontSize: 11, color: "#8899BB", fontStyle: "italic" }}>Sin resultados</div>
+                    ) : visible.map(opt => {
+                      const isActive = sel[section.key] === opt.id;
+                      const optColor = sectionColors[section.key];
+                      return (
+                        <div key={opt.id} className="chip"
+                          style={{
+                            ...s.opt(isActive, optColor),
+                            ...(opt.ref ? { opacity: isActive ? 0.85 : 0.4, borderStyle: "dashed" } : {}),
+                            ...(opt.tag === "v4" ? { borderStyle: isActive ? "solid" : "dotted", borderColor: isActive ? "#FF8C42" : "#FF8C4266" } : {})
+                          }}
+                          onClick={() => update(section.key, opt.id)}>
+                          {opt.ref && <span style={{ fontSize: 8, color: "#FF8C42", marginRight: 3, fontWeight: 700 }}>REF</span>}
+                          {opt.tag === "v4" && <span style={s.v4badge}>V4</span>}
+                          {opt.label}
+                          <span style={{ opacity: 0.5, marginLeft: 4, fontSize: 10 }}>{opt.kcal > 0 ? opt.kcal : ""}</span>
+                          <span style={{ opacity: 0.4, marginLeft: 2, fontSize: 9 }}>{opt.p > 0 ? Math.round(opt.p) + "p" : ""}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        );
+      })}
+
+      {/* WHOOP */}
+      <div style={s.whoopBox}>
+        <div style={s.whoopLabel}>GASTO CALORICO DEL DIA (WHOOP / manual)</div>
+        <div style={s.whoopRow}>
+          <input type="number" value={gastoWhoop} onChange={e => setGastoWhoop(e.target.value)} placeholder="2400" min="1000" max="5000" step="10" />
+          <span style={s.whoopUnit}>kcal quemadas hoy</span>
+        </div>
+        {!gastoWhoop && <div style={s.noGasto}>Sin gasto cargado. Deficit se calcula cuando lo pongas.</div>}
+      </div>
+
+      {/* ACTION BUTTONS */}
+      <div style={{ display: "flex", gap: 8, marginTop: 14 }}>
+        <button className="btn" onClick={saveDay} style={{
+          flex: 1, background: savedFlash ? "#00E5A0" : "linear-gradient(135deg, #00E5A0, #00B871)", color: "#0B1120", border: "none",
+          borderRadius: 10, padding: "13px 16px", fontSize: 14, fontWeight: 800, boxShadow: "0 4px 15px #00E5A022"
+        }}>
+          {savedFlash ? "✓ Guardado" : "Guardar dia"}
+        </button>
+        <button className="btn" onClick={exportPDF} style={{
+          flex: 2, background: "linear-gradient(135deg, #6C5CE7, #4834d4)", color: "#fff", border: "none",
+          borderRadius: 10, padding: "13px 16px", fontSize: 14, fontWeight: 800, boxShadow: "0 4px 15px #6C5CE722"
+        }}>
+          Exportar PDF
+        </button>
+      </div>
+
+      {/* HISTORY */}
+      {history.length > 0 && (
+        <div style={{ ...s.results, padding: "12px 14px", marginTop: 14 }}>
+          <div onClick={() => setShowHistory(!showHistory)} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", cursor: "pointer", userSelect: "none" }}>
+            <span style={{ fontSize: 14, fontWeight: 700, color: "#fff" }}>Historico ({history.length})</span>
+            <span style={{ color: "#8899BB", fontSize: 12 }}>{showHistory ? "▲" : "▼"}</span>
+          </div>
+          {showHistory && (
+            <div style={{ marginTop: 10 }} className="fade-in">
+              {history.map(h => (
+                <div key={h.ts} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 10px", background: "#0B1120", borderRadius: 8, marginBottom: 6, gap: 8 }}>
+                  <div style={{ flex: 1, cursor: "pointer" }} onClick={() => loadDay(h)}>
+                    <div style={{ fontSize: 11, color: "#6C5CE7", fontWeight: 700 }}>{h.date}</div>
+                    <div style={{ fontSize: 10, color: "#8899BB", marginTop: 2 }}>
+                      <span style={{ color: "#FF8C42" }}>{h.kcal}</span>kcal
+                      <span style={{ color: "#6C5CE7", marginLeft: 6 }}>{h.p}g</span> P
+                      <span style={{ color: "#FFD93D", marginLeft: 6 }}>{h.c}g</span> C
+                      <span style={{ color: "#00B8D4", marginLeft: 6 }}>{h.f}g</span> G
+                      {h.gasto && <span style={{ color: "#8899BB", marginLeft: 6 }}>def {h.deficit > 0 ? h.deficit : "+" + Math.abs(h.deficit)}</span>}
+                    </div>
+                  </div>
+                  <button className="btn" onClick={() => deleteDay(h.ts)} style={{
+                    background: "transparent", color: "#FF6B6B", border: "1px solid #FF6B6B33",
+                    borderRadius: 6, padding: "4px 8px", fontSize: 12, fontWeight: 700
+                  }}>×</button>
+                </div>
+              ))}
+              <div style={{ fontSize: 10, color: "#8899BB", textAlign: "center", marginTop: 6, fontStyle: "italic" }}>Click en un dia para cargarlo</div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* RESULTS */}
+      <div style={s.results}>
+        <div style={s.resTitle}>Resumen del dia</div>
+
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 14 }}>
+          <div style={{ background: "#0B1120", borderRadius: 10, padding: "12px 14px", borderLeft: "3px solid #FF8C42" }}>
+            <div style={{ fontSize: 9, color: "#8899BB", fontWeight: 700, letterSpacing: 1 }}>CALORIAS</div>
+            <div style={{ fontSize: 28, fontWeight: 800, color: "#FF8C42", lineHeight: 1.1 }}>{R.kcal}</div>
+            <div style={{ fontSize: 10, color: "#8899BB" }}>kcal totales</div>
+          </div>
+          <div style={{ background: "#0B1120", borderRadius: 10, padding: "12px 14px", borderLeft: "3px solid " + R.helmsColor }}>
+            <div style={{ fontSize: 9, color: "#8899BB", fontWeight: 700, letterSpacing: 1 }}>PROTEINA</div>
+            <div style={{ fontSize: 28, fontWeight: 800, color: R.helmsColor, lineHeight: 1.1 }}>{Math.round(R.p)}<span style={{ fontSize: 14, opacity: 0.6 }}>g</span></div>
+            <div style={{ fontSize: 10, color: "#8899BB" }}>{R.gkgMLG.toFixed(1)} g/kg MLG</div>
+          </div>
+        </div>
+
+        <div style={s.row}>
+          <span style={s.rowLabel}>Proteina</span>
+          <span style={{ ...s.rowVal("#6C5CE7"), display: "flex", alignItems: "center", flexWrap: "wrap", justifyContent: "flex-end" }}>
+            ~{Math.round(R.p)}g ({R.gkgMLG.toFixed(1)} g/kg MLG)
+            <span style={s.badge(R.helmsColor)}>{R.helmsZona}</span>
+          </span>
+        </div>
+        <div style={s.row}>
+          <span style={s.rowLabel}>Carbohidratos</span>
+          <span style={s.rowVal("#FFD93D")}>~{Math.round(R.c)}g ({R.carbPct}%)</span>
+        </div>
+        <div style={s.row}>
+          <span style={s.rowLabel}>Grasas</span>
+          <span style={{ ...s.rowVal("#00B8D4"), display: "flex", alignItems: "center", flexWrap: "wrap", justifyContent: "flex-end" }}>
+            ~{Math.round(R.f)}g ({R.fatPct}%)
+            <span style={s.badge(R.fatZonaColor)}>{R.fatZona}</span>
+          </span>
+        </div>
+
+        <div style={{ ...s.secLabel, marginTop: 12 }}>Distribucion calorica</div>
+        <div style={s.macroBar}>
+          <div className="macro-seg" title={"Proteina: " + Math.round(R.p) + "g (" + R.protPct + "%)"} style={{ width: R.protPct + "%", background: "#6C5CE7" }} />
+          <div className="macro-seg" title={"Carbos: " + Math.round(R.c) + "g (" + R.carbPct + "%)"} style={{ width: R.carbPct + "%", background: "#FFD93D" }} />
+          <div className="macro-seg" title={"Grasa: " + Math.round(R.f) + "g (" + R.fatPct + "%)"} style={{ width: R.fatPct + "%", background: "#00B8D4" }} />
+        </div>
+        <div style={{ display: "flex", gap: 16, fontSize: 10, color: "#8899BB", marginBottom: 12 }}>
+          <span style={{ color: "#6C5CE7" }}>Prot {R.protPct}%</span>
+          <span style={{ color: "#FFD93D" }}>Carbs {R.carbPct}%</span>
+          <span style={{ color: "#00B8D4" }}>Grasa {R.fatPct}%</span>
+        </div>
+
+        <div style={s.divider} />
+        <div style={{ ...s.resTitle, fontSize: 15, marginTop: 8 }}>Gasto y Deficit</div>
+
+        {R.gasto ? (
+          <>
+            <div style={s.row}>
+              <span style={s.rowLabel}>Gasto total (WHOOP)</span>
+              <span style={s.rowVal()}>{R.gasto} kcal</span>
+            </div>
+            <div style={s.row}>
+              <span style={s.rowLabel}>Ingesta</span>
+              <span style={s.rowVal("#FF8C42")}>~{R.kcal} kcal</span>
+            </div>
+            <div style={s.row}>
+              <span style={s.rowLabel}>Deficit</span>
+              <span style={{ ...s.rowVal(R.defColor), display: "flex", alignItems: "center", flexWrap: "wrap", justifyContent: "flex-end" }}>
+                {R.deficit > 0 ? "~" + R.deficit + " kcal (" + R.deficitPct + "%)" : "+" + Math.abs(R.deficit) + " kcal (superavit)"}
+                {R.defZona && <span style={s.badge(R.defColor)}>{R.defZona}</span>}
+              </span>
+            </div>
+            <div style={s.row}>
+              <span style={s.rowLabel}>Perdida estimada</span>
+              <span style={s.rowVal(R.defColor)}>~{R.kgSem > 0 ? R.kgSem.toFixed(2) : "0"} kg grasa/sem</span>
+            </div>
+            {R.eaVal !== null && (
+              <div style={s.row}>
+                <span style={s.rowLabel}>Disponib. Energetica</span>
+                <span style={{ ...s.rowVal(R.eaColor), display: "flex", alignItems: "center", flexWrap: "wrap", justifyContent: "flex-end" }}>
+                  {R.eaVal.toFixed(0)} kcal/kg MLG
+                  <span style={s.badge(R.eaColor)}>{R.eaZona}</span>
+                </span>
+              </div>
+            )}
+          </>
+        ) : (
+          <div style={{ padding: "12px 0", color: "#FF8C42", fontSize: 13 }}>
+            Carga tu gasto calorico arriba para ver deficit y analisis completo.
+          </div>
+        )}
+
+        <div style={s.note}>
+          <strong style={{ color: "#fff" }}>Analisis:</strong><br />
+          {R.gkgMLG >= 2.3
+            ? "Proteina en zona optima (" + R.gkgMLG.toFixed(1) + " g/kg MLG). Sintesis proteica muscular maximizada."
+            : R.gkgMLG >= 1.8
+            ? "Proteina aceptable pero no optima (" + R.gkgMLG.toFixed(1) + " g/kg MLG). Helms recomienda >=2.3."
+            : "Proteina BAJA (" + R.gkgMLG.toFixed(1) + " g/kg MLG). Riesgo catabolismo. Subi porciones."
+          }
+          <br />
+          {R.fatGkg < 0.5
+            ? "⚠ Grasa baja (~" + Math.round(R.f) + "g, " + R.fatGkg.toFixed(2) + " g/kg). Riesgo testosterona. Min: 35g/dia."
+            : R.fatGkg < 0.8
+            ? "Grasa aceptable (~" + Math.round(R.f) + "g). Funcion hormonal basica cubierta."
+            : "Grasa adecuada (~" + Math.round(R.f) + "g). Perfil hormonal protegido."
+          }
+          {R.gasto && R.deficit !== null && (<>
+            <br />
+            {R.deficitPct > 42
+              ? "⚠ Deficit critico (" + R.deficitPct + "%). No sostenible >2-3 semanas."
+              : R.deficitPct > 38
+              ? "Deficit limite (" + R.deficitPct + "%). Max 4-6 semanas. Monitorea cargas y recovery."
+              : R.deficitPct > 30
+              ? "Deficit agresivo viable (" + R.deficitPct + "%). Sostenible 4-8 semanas con monitoreo."
+              : R.deficitPct > 0
+              ? "Deficit conservador (" + R.deficitPct + "%). Sostenible 8-12 semanas."
+              : "Sin deficit. Mantenimiento o superavit."
+            }
+          </>)}
+          {R.c < 50 && <><br />{"⚠ Carbos <50g. Posible impacto cognitivo."}</>}
+          {R.eaVal !== null && R.eaVal < 25 && <><br />{"⚠ Disponibilidad energetica baja. Zona RED-S."}</>}
+        </div>
+
+        <div style={{ marginTop: 12, padding: "10px 12px", background: "#0B1120", borderRadius: 8 }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: "#6C5CE7", marginBottom: 6 }}>TABLA EQUIVALENCIAS PROTEINA (pechuga = base, resto = referencia)</div>
+          <div style={{ fontSize: 10, color: "#8899BB", lineHeight: 1.8 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 2, fontSize: 10 }}>
+              <span style={{ color: "#FFD93D", fontWeight: 700 }}>Fuente</span>
+              <span style={{ color: "#FFD93D", fontWeight: 700, textAlign: "center" }}>kcal</span>
+              <span style={{ color: "#FFD93D", fontWeight: 700, textAlign: "center" }}>prot</span>
+              <span>Pechuga 200g</span><span style={{ textAlign: "center" }}>330</span><span style={{ textAlign: "center" }}>62g</span>
+              <span>Whey 75g (2.5 scoops)</span><span style={{ textAlign: "center" }}>300</span><span style={{ textAlign: "center" }}>62g</span>
+              <span>Pechuga 180g</span><span style={{ textAlign: "center" }}>297</span><span style={{ textAlign: "center" }}>56g</span>
+              <span>Whey 60g (2 scoops)</span><span style={{ textAlign: "center" }}>240</span><span style={{ textAlign: "center" }}>50g</span>
+              <span>Pechuga 160g</span><span style={{ textAlign: "center" }}>264</span><span style={{ textAlign: "center" }}>50g</span>
+              <span>2 huevos + 8 claras</span><span style={{ textAlign: "center" }}>280</span><span style={{ textAlign: "center" }}>41g</span>
+              <span>Pechuga 100g</span><span style={{ textAlign: "center" }}>165</span><span style={{ textAlign: "center" }}>31g</span>
+              <span>Whey 30g (1 scoop)</span><span style={{ textAlign: "center" }}>120</span><span style={{ textAlign: "center" }}>25g</span>
+              <span>1 huevo + 4 claras</span><span style={{ textAlign: "center" }}>140</span><span style={{ textAlign: "center" }}>21g</span>
+              <span style={{ color: "#00B8D4", fontWeight: 600, gridColumn: "1 / -1", paddingTop: 4 }}>ATUN (en agua)</span>
+              <span>Atun 200g</span><span style={{ textAlign: "center" }}>232</span><span style={{ textAlign: "center" }}>52g</span>
+              <span>Atun 180g</span><span style={{ textAlign: "center" }}>209</span><span style={{ textAlign: "center" }}>47g</span>
+              <span>Atun 160g</span><span style={{ textAlign: "center" }}>186</span><span style={{ textAlign: "center" }}>42g</span>
+              <span>Atun 100g</span><span style={{ textAlign: "center" }}>116</span><span style={{ textAlign: "center" }}>26g</span>
+              <span style={{ color: "#FF8C42", fontWeight: 600, gridColumn: "1 / -1", paddingTop: 4 }}>SOLO CLARAS</span>
+              <span>17 claras</span><span style={{ textAlign: "center" }}>289</span><span style={{ textAlign: "center" }}>61g</span>
+              <span>16 claras</span><span style={{ textAlign: "center" }}>272</span><span style={{ textAlign: "center" }}>58g</span>
+              <span>14 claras</span><span style={{ textAlign: "center" }}>238</span><span style={{ textAlign: "center" }}>50g</span>
+              <span>9 claras</span><span style={{ textAlign: "center" }}>153</span><span style={{ textAlign: "center" }}>32g</span>
+              <span style={{ color: "#FF6B6B", fontWeight: 600, gridColumn: "1 / -1", paddingTop: 4 }}>PULPA VACA (magra, cocida)</span>
+              <span>Pulpa 200g</span><span style={{ textAlign: "center" }}>430</span><span style={{ textAlign: "center" }}>60g</span>
+              <span>Pulpa 180g</span><span style={{ textAlign: "center" }}>387</span><span style={{ textAlign: "center" }}>54g</span>
+              <span>Pulpa 160g</span><span style={{ textAlign: "center" }}>344</span><span style={{ textAlign: "center" }}>48g</span>
+              <span>Pulpa 100g</span><span style={{ textAlign: "center" }}>215</span><span style={{ textAlign: "center" }}>30g</span>
+              <span style={{ color: "#FF8C42", fontWeight: 600, gridColumn: "1 / -1", paddingTop: 4 }}>V4 - NUEVAS</span>
+              <span>Queso descrem. 120g</span><span style={{ textAlign: "center" }}>240</span><span style={{ textAlign: "center" }}>24g</span>
+              <span>Queso descrem. 100g</span><span style={{ textAlign: "center" }}>200</span><span style={{ textAlign: "center" }}>20g</span>
+              <span>Queso descrem. 70g</span><span style={{ textAlign: "center" }}>140</span><span style={{ textAlign: "center" }}>14g</span>
+              <span>Legumbres 180g</span><span style={{ textAlign: "center" }}>230</span><span style={{ textAlign: "center" }}>16g</span>
+              <span>Legumbres 160g</span><span style={{ textAlign: "center" }}>200</span><span style={{ textAlign: "center" }}>14g</span>
+              <span>Ricota magra 150g</span><span style={{ textAlign: "center" }}>120</span><span style={{ textAlign: "center" }}>14g</span>
+              <span>Tofu 150g</span><span style={{ textAlign: "center" }}>120</span><span style={{ textAlign: "center" }}>13g</span>
+              <span>8 claras + 2 yemas</span><span style={{ textAlign: "center" }}>246</span><span style={{ textAlign: "center" }}>38g</span>
+              <span>6 claras + 2 yemas</span><span style={{ textAlign: "center" }}>210</span><span style={{ textAlign: "center" }}>29g</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div style={{ textAlign: "center", fontSize: 10, color: "#1A2744", marginTop: 20 }}>
+        Pechuga: 165kcal/100g, 31g prot | Atun: 116kcal/100g, 26g prot | Whey: 30g=120kcal, 25g prot | Clara: 17kcal, 3.6g prot | MLG=56.5kg
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.render(<App />, document.getElementById('root'));
+</script>
+<script>
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', function () {
+    navigator.serviceWorker.register('./sw.js').catch(function (e) { console.warn('SW no registrado:', e); });
+  });
+}
+</script>
+</body>
+</html>
