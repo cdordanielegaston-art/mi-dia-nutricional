@@ -87,6 +87,7 @@ const COMOVOY_STORAGE = 'miDiaNutricional_comoVoyCfg';
 const EXTRAS_STORAGE = 'miDiaNutricional_extrasLibres';
 const ANTHROPIC_KEY_STORAGE = 'miDiaNutricional_anthropicKey';
 const CHAT_MODEL_STORAGE = 'miDiaNutricional_chatModel';
+const CHAT_MEM_STORAGE = 'miDiaNutricional_chatMemoria';
 const CHAT_MODELS = [
   { id: 'claude-haiku-4-5-20251001', label: 'Haiku · rápido', prov: 'anthropic' },
   { id: 'claude-sonnet-4-6', label: 'Sonnet · potente', prov: 'anthropic' },
@@ -100,7 +101,10 @@ const CHAT_TOOLS = [
   { name: 'poner_gasto', description: 'Setea el gasto calorico del dia (de WHOOP) en kcal.', schema: { type: 'object', properties: { kcal: { type: 'number', description: 'gasto calorico en kcal' } }, required: ['kcal'] } },
   { name: 'seleccionar_opcion', description: 'Selecciona una opcion del CATALOGO en una seccion, como tocar un chip (ej: poner Pechuga 100g en el desayuno). Usa seccion_key y opcion_id EXACTOS del catalogo. Para dejar una seccion en nada, usa el id de "sin/nada" de esa seccion.', schema: { type: 'object', properties: { seccion_key: { type: 'string', description: 'key de la seccion, ej des_prot, mm_snack, alm_energ' }, opcion_id: { type: 'string', description: 'id de la opcion, ej pech100, almendras_fruta' } }, required: ['seccion_key', 'opcion_id'] } },
   { name: 'limpiar_dia', description: 'Pone TODAS las secciones del dia en nada/0 y borra las comidas libres. Para empezar el dia de cero antes de cargar solo algunas comidas.', schema: { type: 'object', properties: {}, required: [] } },
-  { name: 'quitar_comida_libre', description: 'Quita una comida libre del dia buscandola por su descripcion (o parte de ella).', schema: { type: 'object', properties: { descripcion: { type: 'string', description: 'texto de la comida libre a quitar' } }, required: ['descripcion'] } }
+  { name: 'quitar_comida_libre', description: 'Quita una comida libre del dia buscandola por su descripcion (o parte de ella).', schema: { type: 'object', properties: { descripcion: { type: 'string', description: 'texto de la comida libre a quitar' } }, required: ['descripcion'] } },
+  { name: 'guardar_dia', description: 'Guarda/archiva el DIA actual en el historial (como el boton "Guardar dia"). Es el dia de hoy con lo que se comio, NO el dia tipico.', schema: { type: 'object', properties: {}, required: [] } },
+  { name: 'recordar', description: 'Guarda un dato para recordarlo en futuras charlas: una correccion de macros, una comida frecuente con sus valores, o una preferencia del usuario. Usalo cuando el usuario te corrige o te dice algo que conviene recordar a futuro.', schema: { type: 'object', properties: { dato: { type: 'string', description: 'el hecho a recordar, ej: el alfajor habitual de Gaston es 280 kcal' } }, required: ['dato'] } },
+  { name: 'olvidar', description: 'Borra un dato de la memoria buscandolo por su texto (o parte).', schema: { type: 'object', properties: { texto: { type: 'string', description: 'texto del dato a olvidar' } }, required: ['texto'] } }
 ];
 const MEAL_HORARIOS_DEFAULT = { desayuno: 8, media_manana: 10.5, almuerzo: 13, merienda: 17.5, cena: 21, extras: 17.5, add_almuerzo: 13, add_cena: 21, leche: 8, huevos_dia: 13 };
 const COMIDAS_PRINCIPALES = [["desayuno","☀️ Desayuno"],["media_manana","🥜 Media mañana"],["almuerzo","🍗 Almuerzo"],["merienda","🫖 Merienda"],["cena","🌙 Cena"]];
@@ -560,7 +564,7 @@ function App() {
     setTimeout(() => setSavedFlash(false), 1500);
     if (autoSync && syncCode.trim()) {
       const now = new Date().toISOString();
-      const blob = { sel, gastoWhoop, history: nh, diaTipicoCustom, extrasLibres, _syncedAt: now, _v: 14 };
+      const blob = { sel, gastoWhoop, history: nh, diaTipicoCustom, extrasLibres, chatMemoria, _syncedAt: now, _v: 17 };
       cloudPost({ op: "set", code: syncCode.trim(), data: JSON.stringify(blob) }).then(() => setLastSyncedAt(now)).catch(e => console.error("[sync] autopush", e));
     }
   };
@@ -737,7 +741,7 @@ function App() {
     setSyncBusy(true); if (!silent) { setSyncMsg("Subiendo..."); setSyncMsgColor("#8899BB"); }
     try {
       const now = new Date().toISOString();
-      const blob = { sel, gastoWhoop, history, diaTipicoCustom, extrasLibres, _syncedAt: now, _v: 14 };
+      const blob = { sel, gastoWhoop, history, diaTipicoCustom, extrasLibres, chatMemoria, _syncedAt: now, _v: 17 };
       await cloudPost({ op: "set", code: syncCode.trim(), data: JSON.stringify(blob) });
       setLastSyncedAt(now);
       setSyncMsg("✓ Subido a la nube " + new Date().toLocaleTimeString("es-AR", { hour: "2-digit", minute: "2-digit" })); setSyncMsgColor("#00E5A0");
@@ -762,6 +766,7 @@ function App() {
         if (remote.gastoWhoop != null) setGastoWhoop(remote.gastoWhoop);
         if (remote.diaTipicoCustom) setDiaTipicoCustom(remote.diaTipicoCustom);
         if (remote.extrasLibres) setExtrasLibres(mergeExtras(extrasLibres, remote.extrasLibres));
+        if (Array.isArray(remote.chatMemoria)) setChatMemoria(mergeExtras(chatMemoria, remote.chatMemoria));
       }
       setLastSyncedAt(remote._syncedAt || new Date().toISOString());
       setSyncMsg("✓ Bajado de la nube · " + merged.length + " días en historial"); setSyncMsgColor("#00E5A0");
@@ -824,9 +829,11 @@ function App() {
   const [showChat, setShowChat] = useState(false);
   const [showChatCfg, setShowChatCfg] = useState(false);
   const [chatErr, setChatErr] = useState("");
+  const [chatMemoria, setChatMemoria] = useState(() => { try { const r = localStorage.getItem(CHAT_MEM_STORAGE); return r ? JSON.parse(r) : []; } catch(e){ return []; } });
   const chatEndRef = useRef(null);
   useEffect(() => { try { localStorage.setItem(ANTHROPIC_KEY_STORAGE, anthropicKey); } catch(e){} }, [anthropicKey]);
   useEffect(() => { try { localStorage.setItem(CHAT_MODEL_STORAGE, chatModel); } catch(e){} }, [chatModel]);
+  useEffect(() => { try { localStorage.setItem(CHAT_MEM_STORAGE, JSON.stringify(chatMemoria)); } catch(e){} }, [chatMemoria]);
   useEffect(() => { if (chatEndRef.current) chatEndRef.current.scrollIntoView({ behavior: 'smooth' }); }, [chatMsgs, chatBusy]);
 
   const resumenDia = () => ({
@@ -855,12 +862,15 @@ function App() {
         if (!found) return { error: 'no encontre una comida libre que coincida con: ' + args.descripcion };
         delExtraLibre(found.id); return { ok: true, quitado: found.desc };
       }
+      if (name === 'guardar_dia') { saveDay(); return { ok: true, mensaje: 'Dia guardado en el historial' }; }
+      if (name === 'recordar') { const it = { id: 'm' + Date.now() + '_' + Math.floor(Math.random()*1000), texto: String(args.dato || '').trim(), ts: Date.now() }; if (!it.texto) return { error: 'dato vacio' }; setChatMemoria(prev => [it, ...prev.filter(m => m.texto.toLowerCase() !== it.texto.toLowerCase())].slice(0, 60)); return { ok: true, recordado: it.texto }; }
+      if (name === 'olvidar') { const t = String(args.texto || '').toLowerCase(); const f = chatMemoria.find(m => m.texto.toLowerCase().includes(t)); if (!f) return { error: 'no encontre eso en la memoria' }; setChatMemoria(prev => prev.filter(m => m.id !== f.id)); return { ok: true, olvidado: f.texto }; }
       return { error: 'herramienta desconocida: ' + name };
     } catch(e) { return { error: String(e && e.message || e) }; }
   };
 
   const catalogoTexto = () => { let s = ''; Object.entries(MEALS).forEach(([mk, meal]) => { meal.sections.forEach(sec => { s += sec.key + ' [' + meal.label + ' / ' + sec.label + ']: ' + sec.options.map(o => o.id + '=' + o.label).join(' | ') + '\n'; }); }); return s; };
-  const chatSystemPrompt = () => 'Sos el asistente nutricional dentro de la app "Mi Dia Nutricional" de Gaston. Se breve, directo, en espanol rioplatense. Confirma en una linea lo que hiciste (con kcal cuando sume comida).\n\nREGLAS DE HERRAMIENTAS:\n- Para comidas del CATALOGO (pechuga, harina de almendras, papa, hortalizas, etc.) usa seleccionar_opcion con seccion_key y opcion_id EXACTOS. NUNCA uses agregar_comida_libre para algo que esta en el catalogo.\n- agregar_comida_libre es SOLO para cosas fuera del catalogo (pizza, alfajor, leche entera, fiambre): estima vos los macros.\n- Si el usuario quiere cargar SOLO algunas comidas (ej "solo desayuno y media mañana"), primero usa limpiar_dia y despues selecciona SOLO esas con seleccionar_opcion.\n- cargar_dia_tipico carga el dia tipico COMPLETO; no lo uses si el usuario quiere solo una parte.\n- limpiar_dia pone todo en cero. quitar_comida_libre saca una comida libre.\n\nCATALOGO (seccion_key [comida/seccion]: opcion_id=etiqueta):\n' + catalogoTexto() + '\nDIA TIPICO (ids que selecciona por seccion): ' + JSON.stringify(DIA_TIPICO) + '\n\nEstado actual del dia: ' + JSON.stringify(resumenDia());
+  const chatSystemPrompt = () => 'Sos el asistente nutricional dentro de la app "Mi Dia Nutricional" de Gaston. Se breve, directo, en espanol rioplatense. Confirma en una linea lo que hiciste (con kcal cuando sume comida).\n\nREGLAS DE HERRAMIENTAS:\n- Para comidas del CATALOGO (pechuga, harina de almendras, papa, hortalizas, etc.) usa seleccionar_opcion con seccion_key y opcion_id EXACTOS. NUNCA uses agregar_comida_libre para algo que esta en el catalogo.\n- agregar_comida_libre es SOLO para cosas fuera del catalogo (pizza, alfajor, leche entera, fiambre): estima vos los macros.\n- Si el usuario quiere cargar SOLO algunas comidas (ej "solo desayuno y media mañana"), primero usa limpiar_dia y despues selecciona SOLO esas con seleccionar_opcion.\n- cargar_dia_tipico carga el dia tipico COMPLETO; no lo uses si el usuario quiere solo una parte.\n- limpiar_dia pone todo en cero. quitar_comida_libre saca una comida libre.\n- poner_gasto carga el gasto calorico del dia (de WHOOP). guardar_dia archiva el dia de hoy en el historial.\n- Cuando el usuario te corrija un dato, te diga una comida frecuente o una preferencia, usa "recordar" para tenerlo en cuenta a futuro.\n\nCATALOGO (seccion_key [comida/seccion]: opcion_id=etiqueta):\n' + catalogoTexto() + '\nDIA TIPICO (ids que selecciona por seccion): ' + JSON.stringify(DIA_TIPICO) + '\n\nMEMORIA (lo que aprendiste de Gaston, tenelo SIEMPRE en cuenta): ' + (chatMemoria.length ? chatMemoria.map(m => '- ' + m.texto).join('\n') : '(vacia por ahora)') + '\n\nEstado actual del dia: ' + JSON.stringify(resumenDia());
 
   const runAnthropic = async (uiMsgs, key) => {
     const msgs = uiMsgs.map(m => ({ role: m.role, content: m.text }));
@@ -1652,6 +1662,14 @@ function App() {
                 <div style={{ fontSize: 10, color: "#8899BB", marginBottom: 4 }}>API key de Anthropic (para Haiku/Sonnet). Se guarda solo en tu PC.</div>
                 <input type="password" value={anthropicKey} onChange={e => setAnthropicKey(e.target.value)} placeholder="sk-ant-..." style={{ width: "100%", boxSizing: "border-box" }} />
                 <div style={{ fontSize: 10, color: "#8899BB", marginTop: 4 }}>Los modelos GPT usan tu key de OpenAI (panel ☁️ → 🔑).</div>
+                <div style={{ height: 1, background: "#1A2744", margin: "8px 0" }} />
+                <div style={{ fontSize: 11, fontWeight: 700, color: "#6C5CE7", marginBottom: 4 }}>🧠 Lo que aprendió ({chatMemoria.length})</div>
+                {chatMemoria.length === 0 ? <div style={{ fontSize: 10, color: "#8899BB", fontStyle: "italic" }}>Nada todavía. Corregilo o contale algo y lo va a recordar.</div> : chatMemoria.map(m => (
+                  <div key={m.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, fontSize: 11, color: "#C8D6E5", padding: "3px 0", borderBottom: "1px solid #1A274433" }}>
+                    <span style={{ flex: 1 }}>{m.texto}</span>
+                    <button className="btn" onClick={() => setChatMemoria(prev => prev.filter(x => x.id !== m.id))} title="Olvidar" style={{ background: "transparent", color: "#FF6B6B", border: "none", fontSize: 14, fontWeight: 700, padding: "0 4px" }}>×</button>
+                  </div>
+                ))}
               </div>
             )}
             <div style={{ background: "#0B1120", borderRadius: 8, padding: 10, height: 220, overflowY: "auto", marginBottom: 8 }}>
