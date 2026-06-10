@@ -84,6 +84,7 @@ const AUTOSYNC_STORAGE = 'miDiaNutricional_autoSync';
 const TIPICO_CUSTOM_STORAGE = 'miDiaNutricional_diaTipicoCustom';
 const LASTSYNC_STORAGE = 'miDiaNutricional_lastSyncedAt';
 const COMOVOY_STORAGE = 'miDiaNutricional_comoVoyCfg';
+const EXTRAS_STORAGE = 'miDiaNutricional_extrasLibres';
 const MEAL_HORARIOS_DEFAULT = { desayuno: 8, media_manana: 10.5, almuerzo: 13, merienda: 17.5, cena: 21, extras: 17.5, add_almuerzo: 13, add_cena: 21, leche: 8, huevos_dia: 13 };
 const COMIDAS_PRINCIPALES = [["desayuno","☀️ Desayuno"],["media_manana","🥜 Media mañana"],["almuerzo","🍗 Almuerzo"],["merienda","🫖 Merienda"],["cena","🌙 Cena"]];
 const fmtHora = (dec) => { const hh = Math.floor(dec); const mm = Math.round((dec - hh) * 60); return String(hh).padStart(2,"0") + ":" + String(mm).padStart(2,"0"); };
@@ -419,6 +420,24 @@ const MEALS = {
 
 const MLG = 56.5;
 
+function ExtraForm({ onAdd }) {
+  const [d, setD] = useState(""); const [k, setK] = useState(""); const [p, setP] = useState(""); const [c, setC] = useState(""); const [f, setF] = useState("");
+  const submit = () => { if (!String(k).trim() && !d.trim()) return; onAdd(d, k, p, c, f); setD(""); setK(""); setP(""); setC(""); setF(""); };
+  const inpN = { background: "#0B1120", border: "1.5px solid #1A2744", color: "#fff", borderRadius: 6, padding: "7px 4px", fontSize: 13, flex: 1, minWidth: 0, textAlign: "center", fontWeight: 600, outline: "none", width: "100%" };
+  return (
+    <div style={{ marginTop: 8, padding: 10, background: "#0B1120", borderRadius: 8 }}>
+      <input value={d} onChange={e => setD(e.target.value)} placeholder="Qué comiste (ej: porción de pizza)" style={{ width: "100%", marginBottom: 6, boxSizing: "border-box" }} />
+      <div style={{ display: "flex", gap: 6, marginBottom: 8 }}>
+        <input value={k} onChange={e => setK(e.target.value)} inputMode="decimal" placeholder="kcal" style={inpN} />
+        <input value={p} onChange={e => setP(e.target.value)} inputMode="decimal" placeholder="prot" style={inpN} />
+        <input value={c} onChange={e => setC(e.target.value)} inputMode="decimal" placeholder="carb" style={inpN} />
+        <input value={f} onChange={e => setF(e.target.value)} inputMode="decimal" placeholder="grasa" style={inpN} />
+      </div>
+      <button className="btn" onClick={submit} style={{ width: "100%", background: "linear-gradient(135deg,#00E5A0,#00B871)", color: "#0B1120", border: "none", borderRadius: 8, padding: "9px", fontSize: 13, fontWeight: 800 }}>+ Agregar al día</button>
+    </div>
+  );
+}
+
 function App() {
   const defaults = {};
   const zeroDefaults = {};
@@ -438,13 +457,22 @@ function App() {
   const [history, setHistory] = useState(() => { try { const r = localStorage.getItem(HISTORY_KEY); return r ? JSON.parse(r) : []; } catch(e) { return []; } });
   const [showHistory, setShowHistory] = useState(false);
   const [savedFlash, setSavedFlash] = useState(false);
+  const [extrasLibres, setExtrasLibres] = useState(() => { try { const r = localStorage.getItem(EXTRAS_STORAGE); return r ? JSON.parse(r) : []; } catch(e){ return []; } });
+
+  useEffect(() => { try { localStorage.setItem(EXTRAS_STORAGE, JSON.stringify(extrasLibres)); } catch(e){} }, [extrasLibres]);
 
   useEffect(() => {
     try { localStorage.setItem(STORAGE_KEY, JSON.stringify({ sel, gastoWhoop })); } catch(e) {}
   }, [sel, gastoWhoop]);
 
   const update = (key, val) => setSel(prev => ({ ...prev, [key]: val }));
-  const resetAll = () => setSel(zeroDefaults);
+  const resetAll = () => { setSel(zeroDefaults); setExtrasLibres([]); };
+  const addExtraLibre = (desc, kcal, p, c, f) => {
+    const e = { id: 'x' + Date.now() + '_' + Math.floor(Math.random()*1000), desc: (desc || 'Extra').trim() || 'Extra', kcal: Math.round(+kcal || 0), p: +p || 0, c: +c || 0, f: +f || 0, ts: Date.now(), src: 'app' };
+    setExtrasLibres(prev => [e, ...prev]);
+  };
+  const delExtraLibre = (id) => setExtrasLibres(prev => prev.filter(x => x.id !== id));
+  const mergeExtras = (a, b) => { const byId = {}; [...(a||[]), ...(b||[])].forEach(e => { if (e && e.id) byId[e.id] = e; }); return Object.values(byId).sort((x, y) => (y.ts||0)-(x.ts||0)); };
 
   const mealTotals = useMemo(() => {
     const t = {};
@@ -467,6 +495,7 @@ function App() {
         if (chosen) { kcal += chosen.kcal; p += chosen.p; c += chosen.c; f += chosen.f; }
       });
     });
+    extrasLibres.forEach(e => { kcal += e.kcal; p += e.p; c += e.c; f += e.f; });
     const gasto = gastoWhoop ? parseInt(gastoWhoop) : null;
     const deficit = gasto ? gasto - kcal : null;
     const deficitPct = gasto ? Math.round((deficit / gasto) * 100) : null;
@@ -502,11 +531,11 @@ function App() {
       eaZona = eaVal >= 30 ? "Segura" : eaVal >= 25 ? "Zona gris" : eaVal >= 20 ? "Riesgo RED-S" : "Peligrosa";
     }
     return { kcal, p, c, f, gasto, deficit, deficitPct, gkgMLG, kgSem, fatPct, carbPct, protPct, helmsZona, helmsColor, defZona, defColor, fatGkg, fatZona, fatZonaColor, eaVal, eaColor, eaZona };
-  }, [sel, gastoWhoop]);
+  }, [sel, gastoWhoop, extrasLibres]);
 
   const saveDay = () => {
     const today = new Date().toISOString().split('T')[0];
-    const entry = { date: today, ts: Date.now(), kcal: results.kcal, p: Math.round(results.p), c: Math.round(results.c), f: Math.round(results.f), gasto: results.gasto, deficit: results.deficit, deficitPct: results.deficitPct, gkgMLG: parseFloat(results.gkgMLG.toFixed(2)), sel: { ...sel }, gastoWhoop };
+    const entry = { date: today, ts: Date.now(), kcal: results.kcal, p: Math.round(results.p), c: Math.round(results.c), f: Math.round(results.f), gasto: results.gasto, deficit: results.deficit, deficitPct: results.deficitPct, gkgMLG: parseFloat(results.gkgMLG.toFixed(2)), sel: { ...sel }, gastoWhoop, extrasLibres: [...extrasLibres] };
     const nh = [entry, ...history.filter(h => h.date !== today)].slice(0, 30);
     setHistory(nh);
     try { localStorage.setItem(HISTORY_KEY, JSON.stringify(nh)); } catch(e) {}
@@ -514,12 +543,12 @@ function App() {
     setTimeout(() => setSavedFlash(false), 1500);
     if (autoSync && syncCode.trim()) {
       const now = new Date().toISOString();
-      const blob = { sel, gastoWhoop, history: nh, diaTipicoCustom, _syncedAt: now, _v: 12 };
+      const blob = { sel, gastoWhoop, history: nh, diaTipicoCustom, extrasLibres, _syncedAt: now, _v: 14 };
       cloudPost({ op: "set", code: syncCode.trim(), data: JSON.stringify(blob) }).then(() => setLastSyncedAt(now)).catch(e => console.error("[sync] autopush", e));
     }
   };
 
-  const loadDay = (entry) => { setSel(entry.sel || defaults); setGastoWhoop(entry.gastoWhoop || ""); setShowHistory(false); };
+  const loadDay = (entry) => { setSel(entry.sel || defaults); setGastoWhoop(entry.gastoWhoop || ""); setExtrasLibres(entry.extrasLibres || []); setShowHistory(false); };
   const deleteDay = (ts) => { const nh = history.filter(h => h.ts !== ts); setHistory(nh); try { localStorage.setItem(HISTORY_KEY, JSON.stringify(nh)); } catch(e) {} };
 
   const optVisible = (opt, sectionKey) => {
@@ -691,7 +720,7 @@ function App() {
     setSyncBusy(true); if (!silent) { setSyncMsg("Subiendo..."); setSyncMsgColor("#8899BB"); }
     try {
       const now = new Date().toISOString();
-      const blob = { sel, gastoWhoop, history, diaTipicoCustom, _syncedAt: now, _v: 12 };
+      const blob = { sel, gastoWhoop, history, diaTipicoCustom, extrasLibres, _syncedAt: now, _v: 14 };
       await cloudPost({ op: "set", code: syncCode.trim(), data: JSON.stringify(blob) });
       setLastSyncedAt(now);
       setSyncMsg("✓ Subido a la nube " + new Date().toLocaleTimeString("es-AR", { hour: "2-digit", minute: "2-digit" })); setSyncMsgColor("#00E5A0");
@@ -715,6 +744,7 @@ function App() {
         if (remote.sel) setSel(remote.sel);
         if (remote.gastoWhoop != null) setGastoWhoop(remote.gastoWhoop);
         if (remote.diaTipicoCustom) setDiaTipicoCustom(remote.diaTipicoCustom);
+        if (remote.extrasLibres) setExtrasLibres(mergeExtras(extrasLibres, remote.extrasLibres));
       }
       setLastSyncedAt(remote._syncedAt || new Date().toISOString());
       setSyncMsg("✓ Bajado de la nube · " + merged.length + " días en historial"); setSyncMsgColor("#00E5A0");
@@ -750,6 +780,7 @@ function App() {
         if (t.p > 0 && (ultProtH == null || hh > ultProtH)) ultProtH = hh;
       }
     });
+    extrasLibres.forEach(e => { ingesta += e.kcal; prot += e.p; });
     const gasto = gastoWhoop ? parseInt(gastoWhoop) : null;
     const wi = c.wakeIni != null ? c.wakeIni : 7;
     const wf = c.wakeFin != null ? c.wakeFin : 23;
@@ -765,7 +796,7 @@ function App() {
     const horasSinProt = ultProtH != null ? +(h - ultProtH).toFixed(1) : null;
     const protAlerta = ultProtH != null && (h - ultProtH) > 4.5 && h < (wf - 0.5);
     return { h, ingesta: Math.round(ingesta), prot: Math.round(prot), gasto, gastoAcum, balance, balZona, balColor, horasSinProt, protAlerta };
-  }, [mealTotals, gastoWhoop, cvCfg, nowH]);
+  }, [mealTotals, gastoWhoop, cvCfg, nowH, extrasLibres]);
 
   useEffect(() => { try { localStorage.setItem(AI_KEY_STORAGE, apiKey); } catch(e){} }, [apiKey]);
   useEffect(() => { try { localStorage.setItem(AI_MODEL_STORAGE, aiModel); } catch(e){} }, [aiModel]);
@@ -1235,6 +1266,24 @@ function App() {
           </div>
         );
       })}
+
+      {/* ===== COMIDAS LIBRES ===== */}
+      <div style={s.meal}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+          <div style={s.mealHead}>➕ Comidas libres <span style={{ fontSize: 10, color: "#8899BB", fontWeight: 500 }}>fuera del listado</span></div>
+          {extrasLibres.length > 0 && <div style={{ fontSize: 10, color: "#8899BB" }}><span style={{ color: "#FF8C42" }}>{extrasLibres.reduce((a, e) => a + e.kcal, 0)}</span> kcal</div>}
+        </div>
+        {extrasLibres.map(e => (
+          <div key={e.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "7px 10px", background: "#0B1120", borderRadius: 8, marginBottom: 6, gap: 8 }}>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontSize: 12, color: "#fff", fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{e.desc}{e.src === 'mcp' && <span style={{ fontSize: 8, color: "#6C5CE7", marginLeft: 4 }}>· por chat</span>}</div>
+              <div style={{ fontSize: 10, color: "#8899BB" }}><span style={{ color: "#FF8C42" }}>{e.kcal}</span>kcal · {Math.round(e.p)}p {Math.round(e.c)}c {Math.round(e.f)}g</div>
+            </div>
+            <button className="btn" onClick={() => delExtraLibre(e.id)} style={{ background: "transparent", color: "#FF6B6B", border: "1px solid #FF6B6B33", borderRadius: 6, padding: "4px 8px", fontSize: 12, fontWeight: 700 }}>×</button>
+          </div>
+        ))}
+        <ExtraForm onAdd={addExtraLibre} />
+      </div>
 
       {/* WHOOP */}
       <div style={s.whoopBox}>
