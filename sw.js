@@ -1,4 +1,4 @@
-const CACHE = 'mdn-v17';
+const CACHE = 'mdn-v18';
 const ASSETS = [
   './',
   './index.html',
@@ -22,13 +22,21 @@ self.addEventListener('activate', e => {
 });
 
 self.addEventListener('fetch', e => {
-  e.respondWith(
-    caches.match(e.request).then(r => r || fetch(e.request).then(res => {
-      if (res.ok && e.request.method === 'GET') {
-        const clone = res.clone();
-        caches.open(CACHE).then(c => c.put(e.request, clone));
-      }
-      return res;
-    }).catch(() => caches.match('./index.html')))
-  );
+  const req = e.request;
+  if (req.method !== 'GET') return;
+  let url;
+  try { url = new URL(req.url); } catch (err) { return; }
+  const esApp = req.mode === 'navigate' || url.pathname.endsWith('/') || url.pathname.endsWith('index.html') || url.pathname.endsWith('manifest.json');
+  if (esApp) {
+    // network-first: SIEMPRE la ultima version si hay internet, cache solo offline
+    e.respondWith(
+      fetch(req).then(res => { const clone = res.clone(); caches.open(CACHE).then(c => c.put(req, clone)); return res; })
+        .catch(() => caches.match(req).then(r => r || caches.match('./index.html')))
+    );
+  } else {
+    // cache-first para CDN y assets (offline-friendly)
+    e.respondWith(
+      caches.match(req).then(r => r || fetch(req).then(res => { if (res.ok) { const clone = res.clone(); caches.open(CACHE).then(c => c.put(req, clone)); } return res; }))
+    );
+  }
 });

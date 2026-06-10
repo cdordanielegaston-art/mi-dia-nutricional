@@ -831,18 +831,20 @@ function App() {
   const [chatErr, setChatErr] = useState("");
   const [chatMemoria, setChatMemoria] = useState(() => { try { const r = localStorage.getItem(CHAT_MEM_STORAGE); return r ? JSON.parse(r) : []; } catch(e){ return []; } });
   const chatEndRef = useRef(null);
+  const liveRef = useRef({});
+  liveRef.current = { results, comoVoy, extrasLibres, sel, gastoWhoop, history, chatMemoria };
   useEffect(() => { try { localStorage.setItem(ANTHROPIC_KEY_STORAGE, anthropicKey); } catch(e){} }, [anthropicKey]);
   useEffect(() => { try { localStorage.setItem(CHAT_MODEL_STORAGE, chatModel); } catch(e){} }, [chatModel]);
   useEffect(() => { try { localStorage.setItem(CHAT_MEM_STORAGE, JSON.stringify(chatMemoria)); } catch(e){} }, [chatMemoria]);
   useEffect(() => { if (chatEndRef.current) chatEndRef.current.scrollIntoView({ behavior: 'smooth' }); }, [chatMsgs, chatBusy]);
 
-  const resumenDia = () => ({
-    kcal: results.kcal, proteina: Math.round(results.p), carbohidratos: Math.round(results.c), grasa: Math.round(results.f),
-    proteina_g_kg_MLG: +results.gkgMLG.toFixed(2),
-    gasto: results.gasto, deficit: results.deficit, deficitPct: results.deficitPct,
-    extras_libres: extrasLibres.map(e => ({ desc: e.desc, kcal: e.kcal })),
-    balance_intradia_ahora: comoVoy.balance, zona: comoVoy.balZona, hora: fmtHora(comoVoy.h)
-  });
+  const resumenDia = () => { const L = liveRef.current; const r = L.results || results; const cv = L.comoVoy || comoVoy; return {
+    kcal: r.kcal, proteina: Math.round(r.p), carbohidratos: Math.round(r.c), grasa: Math.round(r.f),
+    proteina_g_kg_MLG: +r.gkgMLG.toFixed(2),
+    gasto: r.gasto, deficit: r.deficit, deficitPct: r.deficitPct,
+    extras_libres: (L.extrasLibres || extrasLibres).map(e => ({ desc: e.desc, kcal: e.kcal })),
+    balance_intradia_ahora: cv.balance, zona: cv.balZona, hora: fmtHora(cv.h)
+  }; };
 
   const ejecutarTool = (name, args) => {
     try {
@@ -862,7 +864,15 @@ function App() {
         if (!found) return { error: 'no encontre una comida libre que coincida con: ' + args.descripcion };
         delExtraLibre(found.id); return { ok: true, quitado: found.desc };
       }
-      if (name === 'guardar_dia') { saveDay(); return { ok: true, mensaje: 'Dia guardado en el historial' }; }
+      if (name === 'guardar_dia') {
+        const L = liveRef.current; const r = L.results;
+        const today = new Date().toISOString().split('T')[0];
+        const entry = { date: today, ts: Date.now(), kcal: r.kcal, p: Math.round(r.p), c: Math.round(r.c), f: Math.round(r.f), gasto: r.gasto, deficit: r.deficit, deficitPct: r.deficitPct, gkgMLG: +r.gkgMLG.toFixed(2), sel: { ...L.sel }, gastoWhoop: L.gastoWhoop, extrasLibres: [...(L.extrasLibres || [])] };
+        const nh = [entry, ...(L.history || []).filter(h => h.date !== today)].slice(0, 30);
+        setHistory(nh); try { localStorage.setItem(HISTORY_KEY, JSON.stringify(nh)); } catch(e){}
+        if (autoSync && syncCode.trim()) { const now2 = new Date().toISOString(); const blob = { sel: L.sel, gastoWhoop: L.gastoWhoop, history: nh, diaTipicoCustom, extrasLibres: L.extrasLibres, chatMemoria: L.chatMemoria, _syncedAt: now2, _v: 18 }; cloudPost({ op: 'set', code: syncCode.trim(), data: JSON.stringify(blob) }).then(() => setLastSyncedAt(now2)).catch(() => {}); }
+        return { ok: true, guardado_fecha: today, kcal: r.kcal, proteina: Math.round(r.p) };
+      }
       if (name === 'recordar') { const it = { id: 'm' + Date.now() + '_' + Math.floor(Math.random()*1000), texto: String(args.dato || '').trim(), ts: Date.now() }; if (!it.texto) return { error: 'dato vacio' }; setChatMemoria(prev => [it, ...prev.filter(m => m.texto.toLowerCase() !== it.texto.toLowerCase())].slice(0, 60)); return { ok: true, recordado: it.texto }; }
       if (name === 'olvidar') { const t = String(args.texto || '').toLowerCase(); const f = chatMemoria.find(m => m.texto.toLowerCase().includes(t)); if (!f) return { error: 'no encontre eso en la memoria' }; setChatMemoria(prev => prev.filter(m => m.id !== f.id)); return { ok: true, olvidado: f.texto }; }
       return { error: 'herramienta desconocida: ' + name };
@@ -870,7 +880,7 @@ function App() {
   };
 
   const catalogoTexto = () => { let s = ''; Object.entries(MEALS).forEach(([mk, meal]) => { meal.sections.forEach(sec => { s += sec.key + ' [' + meal.label + ' / ' + sec.label + ']: ' + sec.options.map(o => o.id + '=' + o.label).join(' | ') + '\n'; }); }); return s; };
-  const chatSystemPrompt = () => 'Sos el asistente nutricional dentro de la app "Mi Dia Nutricional" de Gaston. Se breve, directo, en espanol rioplatense. Confirma en una linea lo que hiciste (con kcal cuando sume comida).\n\nREGLAS DE HERRAMIENTAS:\n- Para comidas del CATALOGO (pechuga, harina de almendras, papa, hortalizas, etc.) usa seleccionar_opcion con seccion_key y opcion_id EXACTOS. NUNCA uses agregar_comida_libre para algo que esta en el catalogo.\n- agregar_comida_libre es SOLO para cosas fuera del catalogo (pizza, alfajor, leche entera, fiambre): estima vos los macros.\n- Si el usuario quiere cargar SOLO algunas comidas (ej "solo desayuno y media mañana"), primero usa limpiar_dia y despues selecciona SOLO esas con seleccionar_opcion.\n- cargar_dia_tipico carga el dia tipico COMPLETO; no lo uses si el usuario quiere solo una parte.\n- limpiar_dia pone todo en cero. quitar_comida_libre saca una comida libre.\n- poner_gasto carga el gasto calorico del dia (de WHOOP). guardar_dia archiva el dia de hoy en el historial.\n- Cuando el usuario te corrija un dato, te diga una comida frecuente o una preferencia, usa "recordar" para tenerlo en cuenta a futuro.\n\nCATALOGO (seccion_key [comida/seccion]: opcion_id=etiqueta):\n' + catalogoTexto() + '\nDIA TIPICO (ids que selecciona por seccion): ' + JSON.stringify(DIA_TIPICO) + '\n\nMEMORIA (lo que aprendiste de Gaston, tenelo SIEMPRE en cuenta): ' + (chatMemoria.length ? chatMemoria.map(m => '- ' + m.texto).join('\n') : '(vacia por ahora)') + '\n\nEstado actual del dia: ' + JSON.stringify(resumenDia());
+  const chatSystemPrompt = () => 'Sos el asistente nutricional dentro de la app "Mi Dia Nutricional" de Gaston. Se breve, directo, en espanol rioplatense. Confirma en una linea lo que hiciste (con kcal cuando sume comida).\n\nREGLAS DE HERRAMIENTAS:\n- Para comidas del CATALOGO (pechuga, harina de almendras, papa, hortalizas, etc.) usa seleccionar_opcion con seccion_key y opcion_id EXACTOS. NUNCA uses agregar_comida_libre para algo que esta en el catalogo.\n- agregar_comida_libre es SOLO para cosas fuera del catalogo (pizza, alfajor, leche entera, fiambre): estima vos los macros.\n- Si el usuario quiere cargar SOLO algunas comidas (ej "solo desayuno y media mañana"), primero usa limpiar_dia y despues selecciona SOLO esas con seleccionar_opcion.\n- cargar_dia_tipico carga el dia tipico COMPLETO; no lo uses si el usuario quiere solo una parte.\n- limpiar_dia pone todo en cero. quitar_comida_libre saca una comida libre.\n- poner_gasto carga el gasto. guardar_dia ARCHIVA el dia en el historial (distinto de ver_dia, que solo MUESTRA un resumen sin guardar). Si el usuario dice "guarda el dia", usa guardar_dia.\n- NUNCA digas que guardaste, agregaste o cargaste algo sin haber usado la herramienta correspondiente; confirma SIEMPRE con el resultado real que te devuelve la herramienta.\n- Cuando el usuario te corrija un dato, te diga una comida frecuente o una preferencia, usa "recordar" para tenerlo en cuenta a futuro.\n\nCATALOGO (seccion_key [comida/seccion]: opcion_id=etiqueta):\n' + catalogoTexto() + '\nDIA TIPICO (ids que selecciona por seccion): ' + JSON.stringify(DIA_TIPICO) + '\n\nMEMORIA (lo que aprendiste de Gaston, tenelo SIEMPRE en cuenta): ' + (chatMemoria.length ? chatMemoria.map(m => '- ' + m.texto).join('\n') : '(vacia por ahora)') + '\n\nEstado actual del dia: ' + JSON.stringify(resumenDia());
 
   const runAnthropic = async (uiMsgs, key) => {
     const msgs = uiMsgs.map(m => ({ role: m.role, content: m.text }));
@@ -886,6 +896,7 @@ function App() {
       }
       const toolResults = toolUses.map(tu => ({ type: 'tool_result', tool_use_id: tu.id, content: JSON.stringify(ejecutarTool(tu.name, tu.input || {})) }));
       msgs.push({ role: 'user', content: toolResults });
+      await new Promise(res => setTimeout(res, 90));
     }
     return '(me quedé pensando de más, probá de nuevo)';
   };
@@ -904,6 +915,7 @@ function App() {
         let args = {}; try { args = JSON.parse(tc.function.arguments || '{}'); } catch(e) {}
         msgs.push({ role: 'tool', tool_call_id: tc.id, content: JSON.stringify(ejecutarTool(tc.function.name, args)) });
       });
+      await new Promise(res => setTimeout(res, 90));
     }
     return '(me quedé pensando de más, probá de nuevo)';
   };
