@@ -97,7 +97,10 @@ const CHAT_TOOLS = [
   { name: 'agregar_comida_libre', description: 'Agrega una comida que NO esta en el catalogo (pizza, alfajor, asado, fiambre, etc.) al dia de hoy. Si el usuario no da los macros, ESTIMALOS vos con tu conocimiento nutricional.', schema: { type: 'object', properties: { descripcion: { type: 'string', description: 'que comio, ej: 1 alfajor triple' }, kcal: { type: 'number', description: 'calorias totales' }, proteina: { type: 'number', description: 'gramos de proteina' }, carbohidratos: { type: 'number', description: 'gramos de carbohidratos' }, grasa: { type: 'number', description: 'gramos de grasa' } }, required: ['descripcion', 'kcal', 'proteina', 'carbohidratos', 'grasa'] } },
   { name: 'ver_dia', description: 'Devuelve el resumen del dia actual: macros totales, gasto, deficit, proteina g/kg y como va a esta hora.', schema: { type: 'object', properties: {}, required: [] } },
   { name: 'cargar_dia_tipico', description: 'Carga el dia tipico del usuario (sus comidas habituales) en la app.', schema: { type: 'object', properties: {}, required: [] } },
-  { name: 'poner_gasto', description: 'Setea el gasto calorico del dia (de WHOOP) en kcal.', schema: { type: 'object', properties: { kcal: { type: 'number', description: 'gasto calorico en kcal' } }, required: ['kcal'] } }
+  { name: 'poner_gasto', description: 'Setea el gasto calorico del dia (de WHOOP) en kcal.', schema: { type: 'object', properties: { kcal: { type: 'number', description: 'gasto calorico en kcal' } }, required: ['kcal'] } },
+  { name: 'seleccionar_opcion', description: 'Selecciona una opcion del CATALOGO en una seccion, como tocar un chip (ej: poner Pechuga 100g en el desayuno). Usa seccion_key y opcion_id EXACTOS del catalogo. Para dejar una seccion en nada, usa el id de "sin/nada" de esa seccion.', schema: { type: 'object', properties: { seccion_key: { type: 'string', description: 'key de la seccion, ej des_prot, mm_snack, alm_energ' }, opcion_id: { type: 'string', description: 'id de la opcion, ej pech100, almendras_fruta' } }, required: ['seccion_key', 'opcion_id'] } },
+  { name: 'limpiar_dia', description: 'Pone TODAS las secciones del dia en nada/0 y borra las comidas libres. Para empezar el dia de cero antes de cargar solo algunas comidas.', schema: { type: 'object', properties: {}, required: [] } },
+  { name: 'quitar_comida_libre', description: 'Quita una comida libre del dia buscandola por su descripcion (o parte de ella).', schema: { type: 'object', properties: { descripcion: { type: 'string', description: 'texto de la comida libre a quitar' } }, required: ['descripcion'] } }
 ];
 const MEAL_HORARIOS_DEFAULT = { desayuno: 8, media_manana: 10.5, almuerzo: 13, merienda: 17.5, cena: 21, extras: 17.5, add_almuerzo: 13, add_cena: 21, leche: 8, huevos_dia: 13 };
 const COMIDAS_PRINCIPALES = [["desayuno","☀️ Desayuno"],["media_manana","🥜 Media mañana"],["almuerzo","🍗 Almuerzo"],["merienda","🫖 Merienda"],["cena","🌙 Cena"]];
@@ -840,11 +843,24 @@ function App() {
       if (name === 'ver_dia') return resumenDia();
       if (name === 'cargar_dia_tipico') { cargarDiaTipico(); return { ok: true, mensaje: 'Dia tipico cargado en la app' }; }
       if (name === 'poner_gasto') { setGastoWhoop(String(Math.round(+args.kcal || 0))); return { ok: true, gasto: Math.round(+args.kcal || 0) }; }
+      if (name === 'seleccionar_opcion') {
+        let ok = false; Object.values(MEALS).forEach(meal => meal.sections.forEach(sec => { if (sec.key === args.seccion_key && sec.options.find(o => o.id === args.opcion_id)) ok = true; }));
+        if (!ok) return { error: 'seccion u opcion invalida: ' + args.seccion_key + ' / ' + args.opcion_id };
+        update(args.seccion_key, args.opcion_id); return { ok: true, seccion: args.seccion_key, opcion: args.opcion_id };
+      }
+      if (name === 'limpiar_dia') { resetAll(); return { ok: true, mensaje: 'Dia puesto en cero (chips en nada y sin comidas libres)' }; }
+      if (name === 'quitar_comida_libre') {
+        const t = String(args.descripcion || '').toLowerCase();
+        const found = extrasLibres.find(e => e.desc.toLowerCase().includes(t));
+        if (!found) return { error: 'no encontre una comida libre que coincida con: ' + args.descripcion };
+        delExtraLibre(found.id); return { ok: true, quitado: found.desc };
+      }
       return { error: 'herramienta desconocida: ' + name };
     } catch(e) { return { error: String(e && e.message || e) }; }
   };
 
-  const chatSystemPrompt = () => 'Sos el asistente nutricional dentro de la app "Mi Dia Nutricional" de Gaston. Podes: agregar comidas libres (estimando vos los macros si no te los dan), ver el dia, cargar el dia tipico y poner el gasto. Se breve, directo y en espanol rioplatense. Cuando agregues una comida confirma en una linea que la sumaste y con cuantas kcal. Estado actual del dia: ' + JSON.stringify(resumenDia());
+  const catalogoTexto = () => { let s = ''; Object.entries(MEALS).forEach(([mk, meal]) => { meal.sections.forEach(sec => { s += sec.key + ' [' + meal.label + ' / ' + sec.label + ']: ' + sec.options.map(o => o.id + '=' + o.label).join(' | ') + '\n'; }); }); return s; };
+  const chatSystemPrompt = () => 'Sos el asistente nutricional dentro de la app "Mi Dia Nutricional" de Gaston. Se breve, directo, en espanol rioplatense. Confirma en una linea lo que hiciste (con kcal cuando sume comida).\n\nREGLAS DE HERRAMIENTAS:\n- Para comidas del CATALOGO (pechuga, harina de almendras, papa, hortalizas, etc.) usa seleccionar_opcion con seccion_key y opcion_id EXACTOS. NUNCA uses agregar_comida_libre para algo que esta en el catalogo.\n- agregar_comida_libre es SOLO para cosas fuera del catalogo (pizza, alfajor, leche entera, fiambre): estima vos los macros.\n- Si el usuario quiere cargar SOLO algunas comidas (ej "solo desayuno y media mañana"), primero usa limpiar_dia y despues selecciona SOLO esas con seleccionar_opcion.\n- cargar_dia_tipico carga el dia tipico COMPLETO; no lo uses si el usuario quiere solo una parte.\n- limpiar_dia pone todo en cero. quitar_comida_libre saca una comida libre.\n\nCATALOGO (seccion_key [comida/seccion]: opcion_id=etiqueta):\n' + catalogoTexto() + '\nDIA TIPICO (ids que selecciona por seccion): ' + JSON.stringify(DIA_TIPICO) + '\n\nEstado actual del dia: ' + JSON.stringify(resumenDia());
 
   const runAnthropic = async (uiMsgs, key) => {
     const msgs = uiMsgs.map(m => ({ role: m.role, content: m.text }));
