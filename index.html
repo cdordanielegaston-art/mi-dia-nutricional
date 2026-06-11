@@ -88,6 +88,14 @@ const EXTRAS_STORAGE = 'miDiaNutricional_extrasLibres';
 const ANTHROPIC_KEY_STORAGE = 'miDiaNutricional_anthropicKey';
 const CHAT_MODEL_STORAGE = 'miDiaNutricional_chatModel';
 const CHAT_MEM_STORAGE = 'miDiaNutricional_chatMemoria';
+const GASTO_STORAGE = 'miDiaNutricional_gastoIA';
+const PRECIOS_STORAGE = 'miDiaNutricional_preciosIA';
+const PRECIOS_DEFAULT = {
+  'claude-haiku-4-5-20251001': { in: 1.0, out: 5.0 },
+  'claude-sonnet-4-6': { in: 3.0, out: 15.0 },
+  'gpt-4o-mini': { in: 0.15, out: 0.60 },
+  'gpt-4o': { in: 2.50, out: 10.0 }
+};
 const CHAT_MODELS = [
   { id: 'claude-haiku-4-5-20251001', label: 'Haiku · rápido', prov: 'anthropic' },
   { id: 'claude-sonnet-4-6', label: 'Sonnet · potente', prov: 'anthropic' },
@@ -828,6 +836,9 @@ function App() {
   const [chatBusy, setChatBusy] = useState(false);
   const [showChat, setShowChat] = useState(false);
   const [showChatCfg, setShowChatCfg] = useState(false);
+  const [showGastoIA, setShowGastoIA] = useState(false);
+  const [gastoIA, setGastoIA] = useState(() => { try { const r = localStorage.getItem(GASTO_STORAGE); return r ? JSON.parse(r) : {}; } catch(e){ return {}; } });
+  const [preciosIA, setPreciosIA] = useState(() => { try { const r = localStorage.getItem(PRECIOS_STORAGE); return r ? JSON.parse(r) : PRECIOS_DEFAULT; } catch(e){ return PRECIOS_DEFAULT; } });
   const [chatErr, setChatErr] = useState("");
   const [chatMemoria, setChatMemoria] = useState(() => { try { const r = localStorage.getItem(CHAT_MEM_STORAGE); return r ? JSON.parse(r) : []; } catch(e){ return []; } });
   const chatEndRef = useRef(null);
@@ -836,6 +847,17 @@ function App() {
   useEffect(() => { try { localStorage.setItem(ANTHROPIC_KEY_STORAGE, anthropicKey); } catch(e){} }, [anthropicKey]);
   useEffect(() => { try { localStorage.setItem(CHAT_MODEL_STORAGE, chatModel); } catch(e){} }, [chatModel]);
   useEffect(() => { try { localStorage.setItem(CHAT_MEM_STORAGE, JSON.stringify(chatMemoria)); } catch(e){} }, [chatMemoria]);
+  useEffect(() => { try { localStorage.setItem(GASTO_STORAGE, JSON.stringify(gastoIA)); } catch(e){} }, [gastoIA]);
+  useEffect(() => { try { localStorage.setItem(PRECIOS_STORAGE, JSON.stringify(preciosIA)); } catch(e){} }, [preciosIA]);
+  const registrarGasto = (modelo, inTok, outTok) => {
+    if (!inTok && !outTok) return;
+    const hoy = new Date().toISOString().split('T')[0];
+    const p = preciosIA[modelo] || { in: 0, out: 0 };
+    const usd = ((+inTok || 0) * p.in + (+outTok || 0) * p.out) / 1e6;
+    setGastoIA(prev => { const dia = { ...(prev[hoy] || {}) }; const m = { ...(dia[modelo] || { in: 0, out: 0, n: 0, usd: 0 }) }; m.in += (+inTok || 0); m.out += (+outTok || 0); m.n += 1; m.usd += usd; dia[modelo] = m; return { ...prev, [hoy]: dia }; });
+  };
+  const gastoHoyUSD = () => { const hoy = new Date().toISOString().split('T')[0]; const d = gastoIA[hoy] || {}; return Object.values(d).reduce((s, m) => s + (m.usd || 0), 0); };
+  const labelModelo = (id) => { const m = CHAT_MODELS.find(x => x.id === id); return m ? m.label.split(' ·')[0] : id; };
   useEffect(() => { if (chatEndRef.current) chatEndRef.current.scrollIntoView({ behavior: 'smooth' }); }, [chatMsgs, chatBusy]);
 
   const resumenDia = () => { const L = liveRef.current; const r = L.results || results; const cv = L.comoVoy || comoVoy; return {
@@ -889,6 +911,7 @@ function App() {
       const resp = await fetch('https://api.anthropic.com/v1/messages', { method: 'POST', headers: { 'content-type': 'application/json', 'x-api-key': key, 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' }, body: JSON.stringify({ model: chatModel, max_tokens: 1024, system: chatSystemPrompt(), messages: msgs, tools }) });
       if (!resp.ok) { const t = await resp.text(); throw new Error('Anthropic ' + resp.status + ': ' + t.slice(0, 200)); }
       const data = await resp.json();
+      if (data.usage) registrarGasto(chatModel, data.usage.input_tokens, data.usage.output_tokens);
       msgs.push({ role: 'assistant', content: data.content });
       const toolUses = (data.content || []).filter(b => b.type === 'tool_use');
       if (data.stop_reason !== 'tool_use' || toolUses.length === 0) {
@@ -908,6 +931,7 @@ function App() {
       const resp = await fetch('https://api.openai.com/v1/chat/completions', { method: 'POST', headers: { 'Authorization': 'Bearer ' + key, 'Content-Type': 'application/json' }, body: JSON.stringify({ model: chatModel, messages: msgs, tools }) });
       if (!resp.ok) { const t = await resp.text(); throw new Error('OpenAI ' + resp.status + ': ' + t.slice(0, 200)); }
       const data = await resp.json();
+      if (data.usage) registrarGasto(chatModel, data.usage.prompt_tokens, data.usage.completion_tokens);
       const msg = data.choices[0].message;
       msgs.push(msg);
       if (!msg.tool_calls || msg.tool_calls.length === 0) return (msg.content || '(listo)').trim();
@@ -1658,10 +1682,66 @@ function App() {
       <div style={{ marginTop: 24, background: "#131D35", border: "1.5px solid #6C5CE7", borderRadius: 12, overflow: "hidden" }}>
         <div onClick={() => setShowChat(!showChat)} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "12px 14px", cursor: "pointer", userSelect: "none" }}>
           <div style={{ fontSize: 14, fontWeight: 800, color: "#fff" }}>💬 Asistente <span style={{ fontSize: 10, color: "#8899BB", fontWeight: 500 }}>· hablale natural</span></div>
-          <span style={{ color: "#8899BB", fontSize: 12 }}>{showChat ? "▲" : "▼"}</span>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <span onClick={e => { e.stopPropagation(); setShowChat(true); setShowGastoIA(true); }} title="Gasto en IA de hoy — tocá para el detalle" style={{ fontSize: 11, fontWeight: 700, color: "#00E5A0", background: "#00E5A018", border: "1px solid #00E5A044", padding: "2px 8px", borderRadius: 6 }}>💵 ${gastoHoyUSD().toFixed(3)}</span>
+            <span style={{ color: "#8899BB", fontSize: 12 }}>{showChat ? "▲" : "▼"}</span>
+          </div>
         </div>
         {showChat && (
           <div style={{ padding: "0 12px 12px" }} className="fade-in">
+            {showGastoIA && (
+              <div className="fade-in" style={{ marginBottom: 8, padding: "10px 12px", background: "#0B1120", borderRadius: 8, border: "1px solid #00E5A033" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                  <div style={{ fontSize: 13, fontWeight: 800, color: "#00E5A0" }}>💵 Gasto en IA</div>
+                  <button className="btn" onClick={() => setShowGastoIA(false)} style={{ background: "transparent", border: "1px solid #1A2744", borderRadius: 6, color: "#8899BB", padding: "3px 8px", fontSize: 12 }}>✕</button>
+                </div>
+                {Object.keys(gastoIA).length === 0 ? (
+                  <div style={{ fontSize: 11, color: "#8899BB", fontStyle: "italic" }}>Todavía no gastaste nada. Cada mensaje al chat suma acá.</div>
+                ) : (
+                  <div>
+                    {Object.keys(gastoIA).sort().reverse().slice(0, 14).map(fecha => {
+                      const dia = gastoIA[fecha];
+                      const totalDia = Object.values(dia).reduce((s, m) => s + (m.usd || 0), 0);
+                      return (
+                        <div key={fecha} style={{ marginBottom: 6, paddingBottom: 6, borderBottom: "1px solid #1A274433" }}>
+                          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12 }}>
+                            <span style={{ color: "#C8D6E5", fontWeight: 700 }}>{fecha}</span>
+                            <span style={{ color: "#00E5A0", fontWeight: 800 }}>${totalDia.toFixed(4)}</span>
+                          </div>
+                          {Object.entries(dia).map(([mid, m]) => (
+                            <div key={mid} style={{ display: "flex", justifyContent: "space-between", fontSize: 10, color: "#8899BB", paddingLeft: 6 }}>
+                              <span>{labelModelo(mid)} · {m.n} msj</span>
+                              <span>${m.usd.toFixed(4)}</span>
+                            </div>
+                          ))}
+                        </div>
+                      );
+                    })}
+                    <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, marginTop: 4 }}>
+                      <span style={{ color: "#8899BB", fontWeight: 700 }}>TOTAL acumulado</span>
+                      <span style={{ color: "#FFD93D", fontWeight: 800 }}>${Object.values(gastoIA).reduce((s, dia) => s + Object.values(dia).reduce((a, m) => a + (m.usd || 0), 0), 0).toFixed(4)}</span>
+                    </div>
+                  </div>
+                )}
+                <details style={{ marginTop: 8 }}>
+                  <summary style={{ fontSize: 11, color: "#6C5CE7", fontWeight: 700, cursor: "pointer", userSelect: "none" }}>⚙️ Precios (USD por millón de tokens)</summary>
+                  <div style={{ marginTop: 6 }}>
+                    {CHAT_MODELS.map(mod => {
+                      const p = preciosIA[mod.id] || { in: 0, out: 0 };
+                      return (
+                        <div key={mod.id} style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4, fontSize: 10 }}>
+                          <span style={{ flex: 1, color: "#C8D6E5" }}>{mod.label.split(' ·')[0]}</span>
+                          <span style={{ color: "#8899BB" }}>in</span>
+                          <input type="number" step="0.01" value={p.in} onChange={e => setPreciosIA(prev => ({ ...prev, [mod.id]: { in: +e.target.value || 0, out: (prev[mod.id] || {}).out || 0 } }))} style={{ width: 54, background: "#0B1120", color: "#fff", border: "1px solid #1A2744", borderRadius: 4, padding: "3px 4px", fontSize: 10, textAlign: "center" }} />
+                          <span style={{ color: "#8899BB" }}>out</span>
+                          <input type="number" step="0.01" value={p.out} onChange={e => setPreciosIA(prev => ({ ...prev, [mod.id]: { in: (prev[mod.id] || {}).in || 0, out: +e.target.value || 0 } }))} style={{ width: 54, background: "#0B1120", color: "#fff", border: "1px solid #1A2744", borderRadius: 4, padding: "3px 4px", fontSize: 10, textAlign: "center" }} />
+                        </div>
+                      );
+                    })}
+                  </div>
+                </details>
+              </div>
+            )}
             <div style={{ display: "flex", gap: 6, alignItems: "center", marginBottom: 8 }}>
               <select value={chatModel} onChange={e => setChatModel(e.target.value)} style={{ flex: 1, background: "#0B1120", color: "#fff", border: "1.5px solid #1A2744", borderRadius: 6, padding: "6px 8px", fontSize: 12 }}>
                 {CHAT_MODELS.map(m => <option key={m.id} value={m.id}>{m.label}</option>)}
