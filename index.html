@@ -570,11 +570,7 @@ function App() {
     try { localStorage.setItem(HISTORY_KEY, JSON.stringify(nh)); } catch(e) {}
     setSavedFlash(true);
     setTimeout(() => setSavedFlash(false), 1500);
-    if (autoSync && syncCode.trim()) {
-      const now = new Date().toISOString();
-      const blob = { sel, gastoWhoop, history: nh, diaTipicoCustom, extrasLibres, chatMemoria, _syncedAt: now, _v: 17 };
-      cloudPost({ op: "set", code: syncCode.trim(), data: JSON.stringify(blob) }).then(() => setLastSyncedAt(now)).catch(e => console.error("[sync] autopush", e));
-    }
+    // el auto-push (useEffect con debounce) detecta el nuevo history y lo sube solo
   };
 
   const loadDay = (entry) => { setSel(entry.sel || defaults); setGastoWhoop(entry.gastoWhoop || ""); setExtrasLibres(entry.extrasLibres || []); setShowHistory(false); };
@@ -699,6 +695,8 @@ function App() {
   const [listening, setListening] = useState(false);
   const [tipicoFlash, setTipicoFlash] = useState(false);
   const recRef = useRef(null);
+  const lastBlobRef = useRef(null);
+  const pullRef = useRef(null);
 
   // ===== Editor de día típico + Nube =====
   const [diaTipicoCustom, setDiaTipicoCustom] = useState(() => { try { const r = localStorage.getItem(TIPICO_CUSTOM_STORAGE); return r ? JSON.parse(r) : null; } catch(e){ return null; } });
@@ -744,49 +742,85 @@ function App() {
     return await resp.json();
   };
 
+  const canonBlob = (o) => JSON.stringify({ sel: o.sel, gastoWhoop: o.gastoWhoop, history: o.history, diaTipicoCustom: o.diaTipicoCustom, extrasLibres: o.extrasLibres, chatMemoria: o.chatMemoria });
+
   const pushCloud = async (silent) => {
     if (!syncCode.trim()) { if (!silent) { setSyncMsg("Poné un código de sync primero"); setSyncMsgColor("#FF8C42"); } return; }
-    setSyncBusy(true); if (!silent) { setSyncMsg("Subiendo..."); setSyncMsgColor("#8899BB"); }
+    if (!silent) { setSyncBusy(true); setSyncMsg("Subiendo..."); setSyncMsgColor("#8899BB"); }
     try {
       const now = new Date().toISOString();
-      const blob = { sel, gastoWhoop, history, diaTipicoCustom, extrasLibres, chatMemoria, _syncedAt: now, _v: 17 };
+      const key = canonBlob({ sel, gastoWhoop, history, diaTipicoCustom, extrasLibres, chatMemoria });
+      const blob = { sel, gastoWhoop, history, diaTipicoCustom, extrasLibres, chatMemoria, _syncedAt: now, _v: 21 };
       await cloudPost({ op: "set", code: syncCode.trim(), data: JSON.stringify(blob) });
-      setLastSyncedAt(now);
-      setSyncMsg("✓ Subido a la nube " + new Date().toLocaleTimeString("es-AR", { hour: "2-digit", minute: "2-digit" })); setSyncMsgColor("#00E5A0");
-    } catch(e) { console.error("[sync] push", e); setSyncMsg("Error subiendo: " + (e.message || e)); setSyncMsgColor("#FF6B6B"); }
-    finally { setSyncBusy(false); }
+      lastBlobRef.current = key; setLastSyncedAt(now);
+      if (!silent) { setSyncMsg("✓ Subido a la nube " + new Date().toLocaleTimeString("es-AR", { hour: "2-digit", minute: "2-digit" })); setSyncMsgColor("#00E5A0"); }
+    } catch(e) { console.error("[sync] push", e); if (!silent) { setSyncMsg("Error subiendo: " + (e.message || e)); setSyncMsgColor("#FF6B6B"); } }
+    finally { if (!silent) setSyncBusy(false); }
   };
 
   const pullCloud = async (silent) => {
     if (!syncCode.trim()) { if (!silent) { setSyncMsg("Poné un código de sync primero"); setSyncMsgColor("#FF8C42"); } return; }
-    setSyncBusy(true); if (!silent) { setSyncMsg("Bajando..."); setSyncMsgColor("#8899BB"); }
+    if (!silent) { setSyncBusy(true); setSyncMsg("Bajando..."); setSyncMsgColor("#8899BB"); }
     try {
       const r = await cloudPost({ op: "get", code: syncCode.trim() });
-      if (!r || !r.found || !r.data) { if (!silent) { setSyncMsg("Todavía no hay datos en la nube para ese código"); setSyncMsgColor("#FF8C42"); } setSyncBusy(false); return; }
+      if (!r || !r.found || !r.data) { if (!silent) { setSyncMsg("Todavía no hay datos en la nube para ese código"); setSyncMsgColor("#FF8C42"); setSyncBusy(false); } return; }
       const remote = JSON.parse(r.data);
-      const merged = mergeHistorial(history, remote.history);
-      setHistory(merged);
-      try { localStorage.setItem(HISTORY_KEY, JSON.stringify(merged)); } catch(e){}
       const remoteTs = remote._syncedAt ? Date.parse(remote._syncedAt) : 0;
       const localTs = lastSyncedAt ? Date.parse(lastSyncedAt) : 0;
-      if (!silent || remoteTs > localTs) {
-        if (remote.sel) setSel(remote.sel);
-        if (remote.gastoWhoop != null) setGastoWhoop(remote.gastoWhoop);
-        if (remote.diaTipicoCustom) setDiaTipicoCustom(remote.diaTipicoCustom);
-        if (remote.extrasLibres) setExtrasLibres(mergeExtras(extrasLibres, remote.extrasLibres));
-        if (Array.isArray(remote.chatMemoria)) setChatMemoria(mergeExtras(chatMemoria, remote.chatMemoria));
+      const aplicar = (!silent || remoteTs > localTs);
+      const newHistory = mergeHistorial(history, remote.history);
+      const newExtras = remote.extrasLibres ? mergeExtras(extrasLibres, remote.extrasLibres) : extrasLibres;
+      const newMem = Array.isArray(remote.chatMemoria) ? mergeExtras(chatMemoria, remote.chatMemoria) : chatMemoria;
+      const newSel = (aplicar && remote.sel) ? remote.sel : sel;
+      const newGasto = (aplicar && remote.gastoWhoop != null) ? remote.gastoWhoop : gastoWhoop;
+      const newTipico = (aplicar && remote.diaTipicoCustom) ? remote.diaTipicoCustom : diaTipicoCustom;
+      const newKey = canonBlob({ sel: newSel, gastoWhoop: newGasto, history: newHistory, diaTipicoCustom: newTipico, extrasLibres: newExtras, chatMemoria: newMem });
+      if (newKey !== lastBlobRef.current) {
+        setHistory(newHistory);
+        try { localStorage.setItem(HISTORY_KEY, JSON.stringify(newHistory)); } catch(e){}
+        setExtrasLibres(newExtras); setChatMemoria(newMem);
+        if (aplicar) { setSel(newSel); setGastoWhoop(newGasto); setDiaTipicoCustom(newTipico); }
+        lastBlobRef.current = newKey;
       }
-      setLastSyncedAt(remote._syncedAt || new Date().toISOString());
-      setSyncMsg("✓ Bajado de la nube · " + merged.length + " días en historial"); setSyncMsgColor("#00E5A0");
-    } catch(e) { console.error("[sync] pull", e); setSyncMsg("Error bajando: " + (e.message || e)); setSyncMsgColor("#FF6B6B"); }
-    finally { setSyncBusy(false); }
+      if (remoteTs > localTs) setLastSyncedAt(remote._syncedAt);
+      if (!silent) { setSyncMsg("✓ Bajado de la nube · " + newHistory.length + " días en historial"); setSyncMsgColor("#00E5A0"); }
+    } catch(e) { console.error("[sync] pull", e); if (!silent) { setSyncMsg("Error bajando: " + (e.message || e)); setSyncMsgColor("#FF6B6B"); } }
+    finally { if (!silent) setSyncBusy(false); }
   };
+
+  pullRef.current = pullCloud;
 
   useEffect(() => {
     if (cloudInit.current) return;
     cloudInit.current = true;
     if (autoSync && syncCode.trim()) pullCloud(true);
   }, []);
+
+  // Auto-push: al cambiar cualquier dato, subir tras 2s (guard por contenido para no loopear ni re-subir lo bajado).
+  useEffect(() => {
+    if (!autoSync || !syncCode.trim()) return;
+    const key = canonBlob({ sel, gastoWhoop, history, diaTipicoCustom, extrasLibres, chatMemoria });
+    if (lastBlobRef.current === null) { lastBlobRef.current = key; return; }
+    if (key === lastBlobRef.current) return;
+    const t = setTimeout(() => {
+      const now = new Date().toISOString();
+      const blob = { sel, gastoWhoop, history, diaTipicoCustom, extrasLibres, chatMemoria, _syncedAt: now, _v: 21 };
+      cloudPost({ op: "set", code: syncCode.trim(), data: JSON.stringify(blob) })
+        .then(() => { lastBlobRef.current = key; setLastSyncedAt(now); })
+        .catch(e => console.error("[sync] auto-push", e));
+    }, 2000);
+    return () => clearTimeout(t);
+  }, [sel, gastoWhoop, history, diaTipicoCustom, extrasLibres, chatMemoria, autoSync, syncCode]);
+
+  // Auto-pull: cada 18s y al volver el foco a la ventana (pullRef evita estado viejo).
+  useEffect(() => {
+    if (!autoSync || !syncCode.trim()) return;
+    const tick = () => { if (!document.hidden && pullRef.current) pullRef.current(true); };
+    const id = setInterval(tick, 18000);
+    window.addEventListener('focus', tick);
+    document.addEventListener('visibilitychange', tick);
+    return () => { clearInterval(id); window.removeEventListener('focus', tick); document.removeEventListener('visibilitychange', tick); };
+  }, [autoSync, syncCode]);
 
   // ===== ¿Cómo voy? (análisis intradía, basado en evidencia) =====
   const [showComoVoy, setShowComoVoy] = useState(false);
@@ -894,7 +928,6 @@ function App() {
         const entry = { date: today, ts: Date.now(), kcal: r.kcal, p: Math.round(r.p), c: Math.round(r.c), f: Math.round(r.f), gasto: r.gasto, deficit: r.deficit, deficitPct: r.deficitPct, gkgMLG: +r.gkgMLG.toFixed(2), sel: { ...L.sel }, gastoWhoop: L.gastoWhoop, extrasLibres: [...(L.extrasLibres || [])] };
         const nh = [entry, ...(L.history || []).filter(h => h.date !== today)].slice(0, 30);
         setHistory(nh); try { localStorage.setItem(HISTORY_KEY, JSON.stringify(nh)); } catch(e){}
-        if (autoSync && syncCode.trim()) { const now2 = new Date().toISOString(); const blob = { sel: L.sel, gastoWhoop: L.gastoWhoop, history: nh, diaTipicoCustom, extrasLibres: L.extrasLibres, chatMemoria: L.chatMemoria, _syncedAt: now2, _v: 18 }; cloudPost({ op: 'set', code: syncCode.trim(), data: JSON.stringify(blob) }).then(() => setLastSyncedAt(now2)).catch(() => {}); }
         return { ok: true, guardado_fecha: today, kcal: r.kcal, proteina: Math.round(r.p) };
       }
       if (name === 'recordar') { const it = { id: 'm' + Date.now() + '_' + Math.floor(Math.random()*1000), texto: String(args.dato || '').trim(), ts: Date.now() }; if (!it.texto) return { error: 'dato vacio' }; setChatMemoria(prev => [it, ...prev.filter(m => m.texto.toLowerCase() !== it.texto.toLowerCase())].slice(0, 60)); return { ok: true, recordado: it.texto }; }
