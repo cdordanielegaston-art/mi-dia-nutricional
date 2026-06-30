@@ -841,6 +841,8 @@ function App() {
   const [preciosIA, setPreciosIA] = useState(() => { try { const r = localStorage.getItem(PRECIOS_STORAGE); return r ? JSON.parse(r) : PRECIOS_DEFAULT; } catch(e){ return PRECIOS_DEFAULT; } });
   const [chatErr, setChatErr] = useState("");
   const [chatMemoria, setChatMemoria] = useState(() => { try { const r = localStorage.getItem(CHAT_MEM_STORAGE); return r ? JSON.parse(r) : []; } catch(e){ return []; } });
+  const [chatImgs, setChatImgs] = useState([]);
+  const chatFileRef = useRef(null);
   const chatEndRef = useRef(null);
   const liveRef = useRef({});
   liveRef.current = { results, comoVoy, extrasLibres, sel, gastoWhoop, history, chatMemoria };
@@ -902,10 +904,37 @@ function App() {
   };
 
   const catalogoTexto = () => { let s = ''; Object.entries(MEALS).forEach(([mk, meal]) => { meal.sections.forEach(sec => { s += sec.key + ' [' + meal.label + ' / ' + sec.label + ']: ' + sec.options.map(o => o.id + '=' + o.label).join(' | ') + '\n'; }); }); return s; };
-  const chatSystemPrompt = () => 'Sos el asistente nutricional dentro de la app "Mi Dia Nutricional" de Gaston. Se breve, directo, en espanol rioplatense. Confirma en una linea lo que hiciste (con kcal cuando sume comida).\n\nREGLAS DE HERRAMIENTAS:\n- Para comidas del CATALOGO (pechuga, harina de almendras, papa, hortalizas, etc.) usa seleccionar_opcion con seccion_key y opcion_id EXACTOS. NUNCA uses agregar_comida_libre para algo que esta en el catalogo.\n- agregar_comida_libre es SOLO para cosas fuera del catalogo (pizza, alfajor, leche entera, fiambre): estima vos los macros. Si es una comida de MARCA o de un restaurante especifico y no estas seguro de los macros, usa web_search para buscar los datos en internet.\n- Si el usuario quiere cargar SOLO algunas comidas (ej "solo desayuno y media mañana"), primero usa limpiar_dia y despues selecciona SOLO esas con seleccionar_opcion.\n- cargar_dia_tipico carga el dia tipico COMPLETO; no lo uses si el usuario quiere solo una parte.\n- limpiar_dia pone todo en cero. quitar_comida_libre saca una comida libre.\n- poner_gasto carga el gasto. guardar_dia ARCHIVA el dia en el historial (distinto de ver_dia, que solo MUESTRA un resumen sin guardar). Si el usuario dice "guarda el dia", usa guardar_dia.\n- NUNCA digas que guardaste, agregaste o cargaste algo sin haber usado la herramienta correspondiente; confirma SIEMPRE con el resultado real que te devuelve la herramienta.\n- Cuando el usuario te corrija un dato, te diga una comida frecuente o una preferencia, usa "recordar" para tenerlo en cuenta a futuro.\n\nCATALOGO (seccion_key [comida/seccion]: opcion_id=etiqueta):\n' + catalogoTexto() + '\nDIA TIPICO (ids que selecciona por seccion): ' + JSON.stringify(DIA_TIPICO) + '\n\nMEMORIA (lo que aprendiste de Gaston, tenelo SIEMPRE en cuenta): ' + (chatMemoria.length ? chatMemoria.map(m => '- ' + m.texto).join('\n') : '(vacia por ahora)') + '\n\nEstado actual del dia: ' + JSON.stringify(resumenDia());
+  const chatSystemPrompt = () => 'Sos el asistente nutricional dentro de la app "Mi Dia Nutricional" de Gaston. Se breve, directo, en espanol rioplatense. Confirma en una linea lo que hiciste (con kcal cuando sume comida).\n\nREGLAS DE HERRAMIENTAS:\n- Para comidas del CATALOGO (pechuga, harina de almendras, papa, hortalizas, etc.) usa seleccionar_opcion con seccion_key y opcion_id EXACTOS. NUNCA uses agregar_comida_libre para algo que esta en el catalogo.\n- agregar_comida_libre es SOLO para cosas fuera del catalogo (pizza, alfajor, leche entera, fiambre): estima vos los macros. Si es una comida de MARCA o de un restaurante especifico y no estas seguro de los macros, usa web_search para buscar los datos en internet.\n- Si el usuario quiere cargar SOLO algunas comidas (ej "solo desayuno y media mañana"), primero usa limpiar_dia y despues selecciona SOLO esas con seleccionar_opcion.\n- cargar_dia_tipico carga el dia tipico COMPLETO; no lo uses si el usuario quiere solo una parte.\n- limpiar_dia pone todo en cero. quitar_comida_libre saca una comida libre.\n- poner_gasto carga el gasto. guardar_dia ARCHIVA el dia en el historial (distinto de ver_dia, que solo MUESTRA un resumen sin guardar). Si el usuario dice "guarda el dia", usa guardar_dia.\n- NUNCA digas que guardaste, agregaste o cargaste algo sin haber usado la herramienta correspondiente; confirma SIEMPRE con el resultado real que te devuelve la herramienta.\n- Cuando el usuario te corrija un dato, te diga una comida frecuente o una preferencia, usa "recordar" para tenerlo en cuenta a futuro.\n- Si el usuario manda una IMAGEN (captura, foto de un plato, etiqueta nutricional, menu o pantalla de otra app), leela: si es una etiqueta con valores nutricionales usalos tal cual, si es un plato estima los macros; despues carga lo que corresponda con las herramientas (agregar_comida_libre o seleccionar_opcion) y deci en una linea que viste en la imagen.\n\nCATALOGO (seccion_key [comida/seccion]: opcion_id=etiqueta):\n' + catalogoTexto() + '\nDIA TIPICO (ids que selecciona por seccion): ' + JSON.stringify(DIA_TIPICO) + '\n\nMEMORIA (lo que aprendiste de Gaston, tenelo SIEMPRE en cuenta): ' + (chatMemoria.length ? chatMemoria.map(m => '- ' + m.texto).join('\n') : '(vacia por ahora)') + '\n\nEstado actual del dia: ' + JSON.stringify(resumenDia());
+
+  const procesarImg = (file) => new Promise((resolve, reject) => {
+    if (!file || !file.type || file.type.indexOf('image/') !== 0) { reject(new Error('no es imagen')); return; }
+    const reader = new FileReader();
+    reader.onload = () => {
+      const img = new Image();
+      img.onload = () => {
+        const MAX = 1280; let w = img.width, h = img.height;
+        if (w > MAX || h > MAX) { if (w >= h) { h = Math.round(h * MAX / w); w = MAX; } else { w = Math.round(w * MAX / h); h = MAX; } }
+        try {
+          const cv = document.createElement('canvas'); cv.width = w; cv.height = h;
+          cv.getContext('2d').drawImage(img, 0, 0, w, h);
+          const url = cv.toDataURL('image/jpeg', 0.85);
+          resolve({ id: 'img' + Date.now() + '_' + Math.floor(Math.random()*10000), media: 'image/jpeg', b64: url.split(',')[1], url });
+        } catch(e) { reject(e); }
+      };
+      img.onerror = () => reject(new Error('no pude leer la imagen'));
+      img.src = reader.result;
+    };
+    reader.onerror = () => reject(new Error('no pude leer el archivo'));
+    reader.readAsDataURL(file);
+  });
+  const addChatImgs = async (files) => {
+    const arr = Array.from(files || []).filter(f => f.type && f.type.indexOf('image/') === 0);
+    if (!arr.length) return;
+    for (const f of arr) { try { const im = await procesarImg(f); setChatImgs(prev => prev.length >= 4 ? prev : [...prev, im]); } catch(e){ setChatErr('No pude leer una imagen: ' + (e.message || e)); } }
+  };
 
   const runAnthropic = async (uiMsgs, key) => {
-    const msgs = uiMsgs.map(m => ({ role: m.role, content: m.text }));
+    const msgs = uiMsgs.map(m => ({ role: m.role, content: (m.imgs && m.imgs.length) ? [...m.imgs.map(im => ({ type: 'image', source: { type: 'base64', media_type: im.media, data: im.b64 } })), ...(m.text ? [{ type: 'text', text: m.text }] : [])] : m.text }));
     const tools = CHAT_TOOLS.map(t => ({ name: t.name, description: t.description, input_schema: t.schema }));
     tools.push({ type: 'web_search_20250305', name: 'web_search', max_uses: 3 });
     for (let i = 0; i < 8; i++) {
@@ -927,7 +956,7 @@ function App() {
   };
 
   const runOpenAI = async (uiMsgs, key) => {
-    const msgs = [{ role: 'system', content: chatSystemPrompt() }, ...uiMsgs.map(m => ({ role: m.role, content: m.text }))];
+    const msgs = [{ role: 'system', content: chatSystemPrompt() }, ...uiMsgs.map(m => ({ role: m.role, content: (m.imgs && m.imgs.length) ? [...(m.text ? [{ type: 'text', text: m.text }] : []), ...m.imgs.map(im => ({ type: 'image_url', image_url: { url: im.url } }))] : m.text }))];
     const tools = CHAT_TOOLS.map(t => ({ type: 'function', function: { name: t.name, description: t.description, parameters: t.schema } }));
     for (let i = 0; i < 6; i++) {
       const resp = await fetch('https://api.openai.com/v1/chat/completions', { method: 'POST', headers: { 'Authorization': 'Bearer ' + key, 'Content-Type': 'application/json' }, body: JSON.stringify({ model: chatModel, messages: msgs, tools }) });
@@ -948,13 +977,14 @@ function App() {
 
   const chatSend = async () => {
     const txt = chatInput.trim();
-    if (!txt || chatBusy) return;
+    const imgs = chatImgs;
+    if ((!txt && imgs.length === 0) || chatBusy) return;
     setChatErr("");
     const prov = (CHAT_MODELS.find(m => m.id === chatModel) || {}).prov;
     const key = prov === 'anthropic' ? anthropicKey : apiKey;
     if (!key.trim()) { setChatErr(prov === 'anthropic' ? 'Falta tu API key de Anthropic (tocá ⚙️ acá abajo y pegala).' : 'Falta tu API key de OpenAI (panel ☁️ → 🔑).'); setShowChatCfg(true); return; }
-    setChatInput("");
-    const base = [...chatMsgs, { role: 'user', text: txt }];
+    setChatInput(""); setChatImgs([]);
+    const base = [...chatMsgs, { role: 'user', text: txt, imgs }];
     setChatMsgs(base);
     setChatBusy(true);
     try {
@@ -1770,15 +1800,34 @@ function App() {
               {chatMsgs.length === 0 && <div style={{ fontSize: 12, color: "#8899BB", textAlign: "center", marginTop: 70, lineHeight: 1.7 }}>Probá:<br />"comí un alfajor"<br />"¿cómo voy hoy?"<br />"cargá mi día típico"<br />"poné el gasto en 2400"</div>}
               {chatMsgs.map((m, i) => (
                 <div key={i} style={{ display: "flex", justifyContent: m.role === 'user' ? "flex-end" : "flex-start", marginBottom: 8 }}>
-                  <div style={{ maxWidth: "82%", padding: "8px 11px", borderRadius: 10, fontSize: 13, lineHeight: 1.4, whiteSpace: "pre-wrap", background: m.role === 'user' ? "#6C5CE7" : "#1A2744", color: "#fff" }}>{m.text}</div>
+                  <div style={{ maxWidth: "82%", padding: "8px 11px", borderRadius: 10, fontSize: 13, lineHeight: 1.4, whiteSpace: "pre-wrap", background: m.role === 'user' ? "#6C5CE7" : "#1A2744", color: "#fff" }}>
+                    {m.imgs && m.imgs.length > 0 && (
+                      <div style={{ display: "flex", gap: 4, flexWrap: "wrap", marginBottom: m.text ? 6 : 0 }}>
+                        {m.imgs.map(im => <img key={im.id} src={im.url} alt="captura" style={{ maxWidth: 150, maxHeight: 150, borderRadius: 6, display: "block" }} />)}
+                      </div>
+                    )}
+                    {m.text}
+                  </div>
                 </div>
               ))}
               {chatBusy && <div style={{ fontSize: 12, color: "#8899BB", fontStyle: "italic" }}>pensando…</div>}
               <div ref={chatEndRef} />
             </div>
             {chatErr && <div style={{ fontSize: 12, color: "#FF6B6B", marginBottom: 8, padding: "6px 8px", background: "#FF6B6B11", borderRadius: 6 }}>{chatErr}</div>}
+            {chatImgs.length > 0 && (
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 6 }}>
+                {chatImgs.map(im => (
+                  <div key={im.id} style={{ position: "relative" }}>
+                    <img src={im.url} alt="adjunto" style={{ width: 54, height: 54, objectFit: "cover", borderRadius: 8, border: "1px solid #2A3A5A" }} />
+                    <button onClick={() => setChatImgs(prev => prev.filter(x => x.id !== im.id))} title="Quitar" style={{ position: "absolute", top: -7, right: -7, background: "#FF6B6B", color: "#fff", border: "none", borderRadius: "50%", width: 19, height: 19, fontSize: 12, fontWeight: 700, lineHeight: 1, cursor: "pointer", padding: 0 }}>×</button>
+                  </div>
+                ))}
+              </div>
+            )}
             <div style={{ display: "flex", gap: 6 }}>
-              <input type="text" value={chatInput} onChange={e => setChatInput(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') chatSend(); }} placeholder="Escribile al asistente…" style={{ flex: 1, boxSizing: "border-box" }} />
+              <input ref={chatFileRef} type="file" accept="image/*" multiple onChange={e => { addChatImgs(e.target.files); e.target.value = ''; }} style={{ display: "none" }} />
+              <button className="btn" onClick={() => chatFileRef.current && chatFileRef.current.click()} disabled={chatBusy} title="Adjuntar captura o foto" style={{ background: "transparent", color: "#6C5CE7", border: "1.5px solid #6C5CE7", borderRadius: 8, padding: "0 12px", fontSize: 18, fontWeight: 700, opacity: chatBusy ? 0.6 : 1 }}>📎</button>
+              <input type="text" value={chatInput} onChange={e => setChatInput(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') chatSend(); }} onPaste={e => { const items = e.clipboardData && e.clipboardData.items; if (items) { const fs = []; for (let i = 0; i < items.length; i++) { if (items[i].type && items[i].type.indexOf('image') === 0) { const f = items[i].getAsFile(); if (f) fs.push(f); } } if (fs.length) { e.preventDefault(); addChatImgs(fs); } } }} placeholder="Escribile o pegá una captura…" style={{ flex: 1, boxSizing: "border-box" }} />
               <button className="btn" onClick={chatSend} disabled={chatBusy} style={{ background: chatBusy ? "#1A2744" : "linear-gradient(135deg,#6C5CE7,#4834d4)", color: "#fff", border: "none", borderRadius: 8, padding: "0 16px", fontSize: 16, fontWeight: 800, opacity: chatBusy ? 0.6 : 1 }}>➤</button>
             </div>
           </div>
