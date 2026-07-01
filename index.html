@@ -793,34 +793,34 @@ function App() {
   useEffect(() => {
     if (cloudInit.current) return;
     cloudInit.current = true;
-    if (autoSync && syncCode.trim()) pullCloud(true);
+    if (syncCode.trim()) pullCloud(true);
   }, []);
 
-  // Auto-push: al cambiar cualquier dato, subir tras 2s (guard por contenido para no loopear ni re-subir lo bajado).
+  // Auto-push: con SOLO tener código de sync, sube al cambiar cualquier dato tras 1.2s (guard por contenido, sin loops).
   useEffect(() => {
-    if (!autoSync || !syncCode.trim()) return;
+    if (!syncCode.trim()) return;
     const key = canonBlob({ sel, gastoWhoop, history, diaTipicoCustom, extrasLibres, chatMemoria });
     if (lastBlobRef.current === null) { lastBlobRef.current = key; return; }
     if (key === lastBlobRef.current) return;
     const t = setTimeout(() => {
       const now = new Date().toISOString();
-      const blob = { sel, gastoWhoop, history, diaTipicoCustom, extrasLibres, chatMemoria, _syncedAt: now, _v: 21 };
+      const blob = { sel, gastoWhoop, history, diaTipicoCustom, extrasLibres, chatMemoria, _syncedAt: now, _v: 22 };
       cloudPost({ op: "set", code: syncCode.trim(), data: JSON.stringify(blob) })
         .then(() => { lastBlobRef.current = key; setLastSyncedAt(now); })
         .catch(e => console.error("[sync] auto-push", e));
-    }, 2000);
+    }, 1200);
     return () => clearTimeout(t);
-  }, [sel, gastoWhoop, history, diaTipicoCustom, extrasLibres, chatMemoria, autoSync, syncCode]);
+  }, [sel, gastoWhoop, history, diaTipicoCustom, extrasLibres, chatMemoria, syncCode]);
 
-  // Auto-pull: cada 18s y al volver el foco a la ventana (pullRef evita estado viejo).
+  // Auto-pull: cada 8s y al volver el foco a la ventana (con solo tener código; pullRef evita estado viejo).
   useEffect(() => {
-    if (!autoSync || !syncCode.trim()) return;
+    if (!syncCode.trim()) return;
     const tick = () => { if (!document.hidden && pullRef.current) pullRef.current(true); };
-    const id = setInterval(tick, 18000);
+    const id = setInterval(tick, 8000);
     window.addEventListener('focus', tick);
     document.addEventListener('visibilitychange', tick);
     return () => { clearInterval(id); window.removeEventListener('focus', tick); document.removeEventListener('visibilitychange', tick); };
-  }, [autoSync, syncCode]);
+  }, [syncCode]);
 
   // ===== ¿Cómo voy? (análisis intradía, basado en evidencia) =====
   const [showComoVoy, setShowComoVoy] = useState(false);
@@ -1319,10 +1319,13 @@ function App() {
             <button className="btn" onClick={() => pushCloud(false)} disabled={syncBusy} style={{ flex: 1, background: "linear-gradient(135deg,#00B8D4,#0097A7)", color: "#fff", border: "none", borderRadius: 8, padding: "11px", fontSize: 13, fontWeight: 800, opacity: syncBusy ? 0.6 : 1 }}>⬆️ Subir</button>
             <button className="btn" onClick={() => pullCloud(false)} disabled={syncBusy} style={{ flex: 1, background: "transparent", color: "#00B8D4", border: "1.5px solid #00B8D4", borderRadius: 8, padding: "11px", fontSize: 13, fontWeight: 800, opacity: syncBusy ? 0.6 : 1 }}>⬇️ Bajar</button>
           </div>
-          <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, color: "#C8D6E5", cursor: "pointer" }}>
-            <input type="checkbox" checked={autoSync} onChange={e => setAutoSync(e.target.checked)} style={{ width: 16, height: 16, accentColor: "#00B8D4" }} />
-            Auto-sincronizar (sube al guardar el día, baja al abrir)
-          </label>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, padding: "9px 11px", borderRadius: 8, background: syncCode.trim() ? "#00E5A011" : "#FF8C4211", border: "1px solid " + (syncCode.trim() ? "#00E5A044" : "#FF8C4244") }}>
+            <span style={{ fontSize: 15 }}>{syncCode.trim() ? "🟢" : "⚪"}</span>
+            <span style={{ color: syncCode.trim() ? "#00E5A0" : "#FF8C42", fontWeight: 800 }}>
+              {syncCode.trim() ? "Sincronización automática ACTIVA" : "Poné un código para activar la sync"}
+            </span>
+          </div>
+          {syncCode.trim() && <div style={{ fontSize: 10.5, color: "#8899BB", marginTop: 5, lineHeight: 1.5 }}>Sube al toque cuando cambiás algo y baja sola cada pocos segundos (no hay que apretar nada). {lastSyncedAt ? "Última sync: " + new Date(lastSyncedAt).toLocaleTimeString("es-AR", { hour: "2-digit", minute: "2-digit", second: "2-digit" }) : "Esperando el primer cambio…"}</div>}
           {syncMsg && <div style={{ fontSize: 12, color: syncMsgColor, marginTop: 8, padding: "6px 8px", background: "#0B1120", borderRadius: 6 }}>{syncMsg}</div>}
           <div style={{ height: 1, background: "#1A2744", margin: "12px 0" }} />
           <div style={{ fontSize: 14, fontWeight: 800, color: "#fff", marginBottom: 6 }}>🔑 IA — API key de OpenAI</div>
