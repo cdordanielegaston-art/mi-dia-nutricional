@@ -79,7 +79,7 @@ const DIA_TIPICO_TEXTO = `DIA TIPICO del usuario (su base habitual):
 - Extras del dia: 2 frutas.
 Estructura: base fija = proteina magra alta; acompanamiento = energetico moderado; volumen = hortalizas; grasa = 1 cdta oliva; bebida = te verde.`;
 const SYNC_URL = 'https://ecddaniele.app.n8n.cloud/webhook/mdn-sync';
-const APP_VERSION = 'v25';
+const APP_VERSION = 'v26';
 const SYNC_CODE_STORAGE = 'miDiaNutricional_syncCode';
 const AUTOSYNC_STORAGE = 'miDiaNutricional_autoSync';
 const TIPICO_CUSTOM_STORAGE = 'miDiaNutricional_diaTipicoCustom';
@@ -487,6 +487,7 @@ function App() {
   const [history, setHistory] = useState(() => { try { const r = localStorage.getItem(HISTORY_KEY); return r ? JSON.parse(r) : []; } catch(e) { return []; } });
   const [showHistory, setShowHistory] = useState(false);
   const [savedFlash, setSavedFlash] = useState(false);
+  const [retomarOff, setRetomarOff] = useState(false);
   const [extrasLibres, setExtrasLibres] = useState(() => { try { const r = localStorage.getItem(EXTRAS_STORAGE); return r ? JSON.parse(r) : []; } catch(e){ return []; } });
 
   useEffect(() => { try { localStorage.setItem(EXTRAS_STORAGE, JSON.stringify(extrasLibres)); } catch(e){} }, [extrasLibres]);
@@ -1231,6 +1232,26 @@ function App() {
           Limpiar todo
         </button>
       </div>
+
+      {/* ===== SEGUIR DÍA DE HOY (guardado en otro dispositivo) ===== */}
+      {(() => {
+        const hoyStr = new Date().toISOString().split('T')[0];
+        const dh = history.find(h => h.date === hoyStr);
+        if (!dh || retomarOff) return null;
+        const dif = (JSON.stringify(sel) !== JSON.stringify(dh.sel || {})) || (String(gastoWhoop || '') !== String(dh.gastoWhoop || '')) || (JSON.stringify(extrasLibres || []) !== JSON.stringify(dh.extrasLibres || []));
+        if (!dif) return null;
+        const hora = new Date(dh.ts).toLocaleTimeString("es-AR", { hour: "2-digit", minute: "2-digit" });
+        return (
+          <div className="fade-in" style={{ background: "linear-gradient(135deg,#0f2f22,#12351f)", border: "1.5px solid #00E5A0", borderRadius: 12, padding: "11px 13px", marginBottom: 12, display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+            <div style={{ flex: 1, minWidth: 150 }}>
+              <div style={{ fontSize: 13, fontWeight: 800, color: "#00E5A0" }}>📅 Tenés un día de hoy guardado</div>
+              <div style={{ fontSize: 11, color: "#8899BB", marginTop: 2 }}>Guardado {hora} · {dh.kcal} kcal · {dh.p}g prot. ¿Lo seguís desde acá?</div>
+            </div>
+            <button className="btn" onClick={() => { loadDay(dh); setRetomarOff(true); }} style={{ background: "linear-gradient(135deg,#00E5A0,#00B871)", color: "#0B1120", border: "none", borderRadius: 8, padding: "9px 14px", fontSize: 13, fontWeight: 800 }}>Seguir mi día</button>
+            <button className="btn" onClick={() => setRetomarOff(true)} title="Ahora no" style={{ background: "transparent", color: "#8899BB", border: "1px solid #1A2744", borderRadius: 8, padding: "9px 11px", fontSize: 13, fontWeight: 700 }}>✕</button>
+          </div>
+        );
+      })()}
 
       {/* ===== IA: CARGAR HABLANDO ===== */}
       <div style={{ background: "linear-gradient(135deg,#1a1340,#131D35)", border: "1.5px solid #6C5CE7", borderRadius: 12, marginBottom: 12, overflow: "hidden" }}>
