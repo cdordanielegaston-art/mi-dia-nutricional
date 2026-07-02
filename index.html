@@ -796,7 +796,7 @@ function App() {
     if (syncCode.trim()) pullCloud(true);
   }, []);
 
-  // Auto-push: con SOLO tener código de sync, sube al cambiar cualquier dato tras 1.2s (guard por contenido, sin loops).
+  // Auto-push: con SOLO tener código de sync, sube al cambiar cualquier dato tras 2.5s (guard por contenido, sin loops).
   useEffect(() => {
     if (!syncCode.trim()) return;
     const key = canonBlob({ sel, gastoWhoop, history, diaTipicoCustom, extrasLibres, chatMemoria });
@@ -808,18 +808,17 @@ function App() {
       cloudPost({ op: "set", code: syncCode.trim(), data: JSON.stringify(blob) })
         .then(() => { lastBlobRef.current = key; setLastSyncedAt(now); })
         .catch(e => console.error("[sync] auto-push", e));
-    }, 1200);
+    }, 2500);
     return () => clearTimeout(t);
   }, [sel, gastoWhoop, history, diaTipicoCustom, extrasLibres, chatMemoria, syncCode]);
 
-  // Auto-pull: cada 8s y al volver el foco a la ventana (con solo tener código; pullRef evita estado viejo).
+  // Auto-pull POR EVENTOS (nada de polling constante, que saturaba n8n): al abrir la app y cada vez que volvés el foco a ella.
   useEffect(() => {
     if (!syncCode.trim()) return;
     const tick = () => { if (!document.hidden && pullRef.current) pullRef.current(true); };
-    const id = setInterval(tick, 8000);
     window.addEventListener('focus', tick);
     document.addEventListener('visibilitychange', tick);
-    return () => { clearInterval(id); window.removeEventListener('focus', tick); document.removeEventListener('visibilitychange', tick); };
+    return () => { window.removeEventListener('focus', tick); document.removeEventListener('visibilitychange', tick); };
   }, [syncCode]);
 
   // ===== ¿Cómo voy? (análisis intradía, basado en evidencia) =====
@@ -1325,7 +1324,7 @@ function App() {
               {syncCode.trim() ? "Sincronización automática ACTIVA" : "Poné un código para activar la sync"}
             </span>
           </div>
-          {syncCode.trim() && <div style={{ fontSize: 10.5, color: "#8899BB", marginTop: 5, lineHeight: 1.5 }}>Sube al toque cuando cambiás algo y baja sola cada pocos segundos (no hay que apretar nada). {lastSyncedAt ? "Última sync: " + new Date(lastSyncedAt).toLocaleTimeString("es-AR", { hour: "2-digit", minute: "2-digit", second: "2-digit" }) : "Esperando el primer cambio…"}</div>}
+          {syncCode.trim() && <div style={{ fontSize: 10.5, color: "#8899BB", marginTop: 5, lineHeight: 1.5 }}>Sube sola al cambiar algo y baja al abrir o volver a la app (no hay que apretar nada). {lastSyncedAt ? "Última sync: " + new Date(lastSyncedAt).toLocaleTimeString("es-AR", { hour: "2-digit", minute: "2-digit", second: "2-digit" }) : "Esperando el primer cambio…"}</div>}
           {syncMsg && <div style={{ fontSize: 12, color: syncMsgColor, marginTop: 8, padding: "6px 8px", background: "#0B1120", borderRadius: 6 }}>{syncMsg}</div>}
           <div style={{ height: 1, background: "#1A2744", margin: "12px 0" }} />
           <div style={{ fontSize: 14, fontWeight: 800, color: "#fff", marginBottom: 6 }}>🔑 IA — API key de OpenAI</div>
