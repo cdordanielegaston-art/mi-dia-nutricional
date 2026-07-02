@@ -79,6 +79,7 @@ const DIA_TIPICO_TEXTO = `DIA TIPICO del usuario (su base habitual):
 - Extras del dia: 2 frutas.
 Estructura: base fija = proteina magra alta; acompanamiento = energetico moderado; volumen = hortalizas; grasa = 1 cdta oliva; bebida = te verde.`;
 const SYNC_URL = 'https://ecddaniele.app.n8n.cloud/webhook/mdn-sync';
+const APP_VERSION = 'v25';
 const SYNC_CODE_STORAGE = 'miDiaNutricional_syncCode';
 const AUTOSYNC_STORAGE = 'miDiaNutricional_autoSync';
 const TIPICO_CUSTOM_STORAGE = 'miDiaNutricional_diaTipicoCustom';
@@ -705,6 +706,8 @@ function App() {
   const [lastSyncedAt, setLastSyncedAt] = useState(() => { try { return localStorage.getItem(LASTSYNC_STORAGE) || ""; } catch(e){ return ""; } });
   const [showCloud, setShowCloud] = useState(false);
   const [syncBusy, setSyncBusy] = useState(false);
+  const [syncLog, setSyncLog] = useState([]);
+  const logSync = (msg) => setSyncLog(prev => [new Date().toLocaleTimeString("es-AR", { hour: "2-digit", minute: "2-digit", second: "2-digit" }) + " · " + msg, ...prev].slice(0, 6));
   const [syncMsg, setSyncMsg] = useState("");
   const [syncMsgColor, setSyncMsgColor] = useState("#8899BB");
   const cloudInit = useRef(false);
@@ -765,24 +768,29 @@ function App() {
       const r = await cloudPost({ op: "get", code: syncCode.trim() });
       if (!r || !r.found || !r.data) { if (!silent) { setSyncMsg("Todavía no hay datos en la nube para ese código"); setSyncMsgColor("#FF8C42"); setSyncBusy(false); } return; }
       const remote = JSON.parse(r.data);
-      const remoteTs = remote._syncedAt ? Date.parse(remote._syncedAt) : 0;
-      const localTs = lastSyncedAt ? Date.parse(lastSyncedAt) : 0;
-      const aplicar = (!silent || remoteTs > localTs);
+      // SIN relojes (evita el bug de horas desincronizadas): si NO tengo cambios propios sin subir, adopto la nube; si los tengo, gano yo (se subirán).
+      const localKey = canonBlob({ sel, gastoWhoop, history, diaTipicoCustom, extrasLibres, chatMemoria });
+      const localPendiente = (lastBlobRef.current !== null && localKey !== lastBlobRef.current);
+      const tomarRemoto = !localPendiente;
       const newHistory = mergeHistorial(history, remote.history);
       const newExtras = remote.extrasLibres ? mergeExtras(extrasLibres, remote.extrasLibres) : extrasLibres;
       const newMem = Array.isArray(remote.chatMemoria) ? mergeExtras(chatMemoria, remote.chatMemoria) : chatMemoria;
-      const newSel = (aplicar && remote.sel) ? remote.sel : sel;
-      const newGasto = (aplicar && remote.gastoWhoop != null) ? remote.gastoWhoop : gastoWhoop;
-      const newTipico = (aplicar && remote.diaTipicoCustom) ? remote.diaTipicoCustom : diaTipicoCustom;
+      const newSel = (tomarRemoto && remote.sel) ? remote.sel : sel;
+      const newGasto = (tomarRemoto && remote.gastoWhoop != null) ? remote.gastoWhoop : gastoWhoop;
+      const newTipico = (tomarRemoto && remote.diaTipicoCustom) ? remote.diaTipicoCustom : diaTipicoCustom;
       const newKey = canonBlob({ sel: newSel, gastoWhoop: newGasto, history: newHistory, diaTipicoCustom: newTipico, extrasLibres: newExtras, chatMemoria: newMem });
-      if (newKey !== lastBlobRef.current) {
+      if (newKey !== localKey) {
         setHistory(newHistory);
         try { localStorage.setItem(HISTORY_KEY, JSON.stringify(newHistory)); } catch(e){}
         setExtrasLibres(newExtras); setChatMemoria(newMem);
-        if (aplicar) { setSel(newSel); setGastoWhoop(newGasto); setDiaTipicoCustom(newTipico); }
+        setSel(newSel); setGastoWhoop(newGasto); setDiaTipicoCustom(newTipico);
         lastBlobRef.current = newKey;
+        logSync('pull: APLICADO' + (localPendiente ? ' (mantuve mi cambio + sumé)' : ''));
+      } else {
+        if (tomarRemoto) lastBlobRef.current = newKey;
+        logSync('pull: sin cambios');
       }
-      if (remoteTs > localTs) setLastSyncedAt(remote._syncedAt);
+      if (remote._syncedAt) setLastSyncedAt(remote._syncedAt);
       if (!silent) { setSyncMsg("✓ Bajado de la nube · " + newHistory.length + " días en historial"); setSyncMsgColor("#00E5A0"); }
     } catch(e) { console.error("[sync] pull", e); if (!silent) { setSyncMsg("Error bajando: " + (e.message || e)); setSyncMsgColor("#FF6B6B"); } }
     finally { if (!silent) setSyncBusy(false); }
@@ -806,8 +814,8 @@ function App() {
       const now = new Date().toISOString();
       const blob = { sel, gastoWhoop, history, diaTipicoCustom, extrasLibres, chatMemoria, _syncedAt: now, _v: 22 };
       cloudPost({ op: "set", code: syncCode.trim(), data: JSON.stringify(blob) })
-        .then(() => { lastBlobRef.current = key; setLastSyncedAt(now); })
-        .catch(e => console.error("[sync] auto-push", e));
+        .then(() => { lastBlobRef.current = key; setLastSyncedAt(now); logSync('push OK'); })
+        .catch(e => { console.error("[sync] auto-push", e); logSync('push ERROR: ' + (e.message||e)); });
     }, 2500);
     return () => clearTimeout(t);
   }, [sel, gastoWhoop, history, diaTipicoCustom, extrasLibres, chatMemoria, syncCode]);
@@ -1325,6 +1333,15 @@ function App() {
             </span>
           </div>
           {syncCode.trim() && <div style={{ fontSize: 10.5, color: "#8899BB", marginTop: 5, lineHeight: 1.5 }}>Sube sola al cambiar algo y baja al abrir o volver a la app (no hay que apretar nada). {lastSyncedAt ? "Última sync: " + new Date(lastSyncedAt).toLocaleTimeString("es-AR", { hour: "2-digit", minute: "2-digit", second: "2-digit" }) : "Esperando el primer cambio…"}</div>}
+          <div style={{ marginTop: 8, padding: "8px 10px", background: "#0B1120", borderRadius: 8, border: "1px solid #1A2744" }}>
+            <div style={{ fontSize: 10, color: "#6C7A99", marginBottom: 4, display: "flex", justifyContent: "space-between" }}>
+              <span>📋 Registro de sync (últimos)</span>
+              <span style={{ fontWeight: 800, color: "#6C5CE7" }}>App {APP_VERSION}</span>
+            </div>
+            {syncLog.length === 0 ? <div style={{ fontSize: 10, color: "#55627A", fontStyle: "italic" }}>Sin actividad. Cambiá algo o volvé a la app y mirá acá.</div> : syncLog.map((l, i) => (
+              <div key={i} style={{ fontSize: 10, color: i === 0 ? "#00E5A0" : "#8899BB", fontFamily: "monospace", padding: "1px 0" }}>{l}</div>
+            ))}
+          </div>
           {syncMsg && <div style={{ fontSize: 12, color: syncMsgColor, marginTop: 8, padding: "6px 8px", background: "#0B1120", borderRadius: 6 }}>{syncMsg}</div>}
           <div style={{ height: 1, background: "#1A2744", margin: "12px 0" }} />
           <div style={{ fontSize: 14, fontWeight: 800, color: "#fff", marginBottom: 6 }}>🔑 IA — API key de OpenAI</div>
