@@ -1,0 +1,35 @@
+name: n8n keepalive (Mi Dia Nutricional)
+
+# Cada 15 min chequea si el workflow de sync de n8n quedo apagado (n8n lo desactiva
+# solo cuando su instancia se reinicia por falta de RAM) y lo vuelve a prender.
+# Corre en GitHub (afuera de n8n), asi que funciona aunque la instancia se haya caido.
+# NO consume la cuota de ejecuciones de n8n (la API de activacion no cuenta como ejecucion).
+
+on:
+  schedule:
+    - cron: '*/15 * * * *'   # cada 15 minutos (UTC)
+  workflow_dispatch: {}       # y a mano desde la pestania Actions si queres
+
+jobs:
+  reactivar:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Reactivar el workflow de sync si n8n lo apago
+        env:
+          N8N_KEY: ${{ secrets.N8N_API_KEY }}
+        run: |
+          if [ -z "$N8N_KEY" ]; then
+            echo "Falta el secret N8N_API_KEY. Cargalo en Settings -> Secrets and variables -> Actions."
+            exit 0
+          fi
+          BASE="https://ecddaniele.app.n8n.cloud/api/v1"
+          WID="TQDi7FTn8YUU1YYR"
+          STATUS=$(curl -s -H "X-N8N-API-KEY: $N8N_KEY" "$BASE/workflows/$WID")
+          if echo "$STATUS" | grep -q '"active":false'; then
+            echo "Sync CAIDO -> reactivando..."
+            curl -s -X POST -H "X-N8N-API-KEY: $N8N_KEY" "$BASE/workflows/$WID/activate" -o /dev/null -w "activate -> HTTP %{http_code}\n"
+          elif echo "$STATUS" | grep -q '"active":true'; then
+            echo "Sync OK, nada que hacer."
+          else
+            echo "Respuesta inesperada (API key mal cargada?): $STATUS"
+          fi
