@@ -1,0 +1,68 @@
+name: SIMULACRO — apagar el sync a proposito (prueba de fuego del keepalive)
+
+# TEMPORAL. Apaga el sync de n8n a proposito para comprobar que el keepalive lo
+# vuelve a prender solo. Sirve para no enterarnos de que el guardian no funciona
+# el dia que n8n se caiga de verdad.
+#
+# NO tiene schedule: solo corre si Gaston (o Claude) lo dispara a mano.
+# Se borra despues de la prueba.
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmar:
+        description: 'Escribi APAGAR para confirmar que queres apagar el sync'
+        required: true
+        default: ''
+
+jobs:
+  apagar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - name: Apagar el sync (simulacro de caida)
+        env:
+          N8N_KEY: ${{ secrets.N8N_API_KEY }}
+        run: |
+          set -uo pipefail
+
+          if [ "${{ inputs.confirmar }}" != "APAGAR" ]; then
+            echo "::error::Confirmacion incorrecta. Hay que escribir APAGAR."
+            exit 1
+          fi
+
+          BASE="https://ecddaniele.app.n8n.cloud"
+          WID="TQDi7FTn8YUU1YYR"
+          HOOK="$BASE/webhook/mdn-sync"
+          CURL=(curl -sS --connect-timeout 10 --max-time 25)
+
+          estado() {
+            local cuerpo
+            cuerpo=$("${CURL[@]}" "$HOOK" 2>/dev/null) || { echo "SIN_RESPUESTA"; return; }
+            if   echo "$cuerpo" | grep -q "not registered for GET"; then echo "ACTIVO"
+            elif echo "$cuerpo" | grep -q "is not registered";      then echo "CAIDO"
+            else echo "RARO"
+            fi
+          }
+
+          if [ -z "${N8N_KEY:-}" ]; then
+            echo "::error::No hay N8N_API_KEY cargada. Sin eso el simulacro no prueba nada."
+            exit 1
+          fi
+
+          echo "Estado ANTES: $(estado)"
+
+          DES=$("${CURL[@]}" -o /dev/null -w '%{http_code}' -X POST \
+                -H "X-N8N-API-KEY: $N8N_KEY" "$BASE/api/v1/workflows/$WID/deactivate" 2>/dev/null || echo 000)
+          echo "deactivate -> HTTP $DES"
+
+          sleep 5
+          EST=$(estado)
+          echo "Estado DESPUES: $EST"
+
+          if [ "$EST" != "CAIDO" ]; then
+            echo "::error::No se pudo apagar el sync (quedo en $EST). El simulacro no sirve."
+            exit 1
+          fi
+
+          echo "Sync APAGADO a proposito. Ahora tiene que correr el keepalive y prenderlo solo."
