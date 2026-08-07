@@ -4,32 +4,89 @@ name: n8n keepalive (Mi Dia Nutricional)
 # solo cuando su instancia se reinicia por falta de RAM) y lo vuelve a prender.
 # Corre en GitHub (afuera de n8n), asi que funciona aunque la instancia se haya caido.
 # NO consume la cuota de ejecuciones de n8n (la API de activacion no cuenta como ejecucion).
+#
+# 2026-08-07 — Endurecido tras 2 corridas canceladas (6/8): los curl no tenian limite de
+# tiempo, asi que cuando n8n no respondia el job quedaba colgado 15 MINUTOS hasta que
+# GitHub lo mataba, y eso mandaba mail de error por un problema transitorio de n8n.
+# Criterio: un hipo de n8n NO debe mandar mail (el proximo run, 15 min despues, lo arregla).
+# Solo avisa por mail lo que necesita que Gaston haga algo (API key vencida o mal cargada).
 
 on:
   schedule:
     - cron: '*/15 * * * *'   # cada 15 minutos (UTC)
   workflow_dispatch: {}       # y a mano desde la pestania Actions si queres
 
+concurrency:
+  group: keepalive-n8n
+  cancel-in-progress: false   # si uno tarda, el siguiente espera (no se cancelan entre si)
+
 jobs:
   reactivar:
     runs-on: ubuntu-latest
+    timeout-minutes: 4        # red de seguridad: los runs sanos tardan 6-15 SEGUNDOS
     steps:
       - name: Reactivar el workflow de sync si n8n lo apago
         env:
           N8N_KEY: ${{ secrets.N8N_API_KEY }}
         run: |
-          if [ -z "$N8N_KEY" ]; then
-            echo "Falta el secret N8N_API_KEY. Cargalo en Settings -> Secrets and variables -> Actions."
-            exit 0
+          set -uo pipefail
+
+          if [ -z "${N8N_KEY:-}" ]; then
+            echo "::error::Falta el secret N8N_API_KEY. Cargalo en Settings -> Secrets and variables -> Actions."
+            exit 1
           fi
+
           BASE="https://ecddaniele.app.n8n.cloud/api/v1"
           WID="TQDi7FTn8YUU1YYR"
-          STATUS=$(curl -s -H "X-N8N-API-KEY: $N8N_KEY" "$BASE/workflows/$WID")
-          if echo "$STATUS" | grep -q '"active":false'; then
+          # --max-time es LO QUE FALTABA: sin esto el curl espera para siempre.
+          CURL=(curl -sS --connect-timeout 10 --max-time 25)
+
+          # ── 1. Consultar estado (3 intentos con espera creciente) ──
+          HTTP=000
+          for i in 1 2 3; do
+            HTTP=$("${CURL[@]}" -o /tmp/wf.json -w '%{http_code}' \
+                   -H "X-N8N-API-KEY: $N8N_KEY" "$BASE/workflows/$WID" 2>/dev/null || echo 000)
+            [ "$HTTP" = "200" ] && break
+            echo "Intento $i: la API de n8n devolvio HTTP $HTTP"
+            [ $i -lt 3 ] && sleep $((i * 10))
+          done
+
+          # ── 2. Interpretar el resultado ──
+          case "$HTTP" in
+            200) : ;;
+            401|403)
+              echo "::error::n8n rechazo la API key (HTTP $HTTP). Renovala en n8n y actualiza el secret N8N_API_KEY."
+              exit 1 ;;
+            404)
+              echo "::error::El workflow $WID no existe en n8n (HTTP 404). Revisa el ID."
+              exit 1 ;;
+            *)
+              # n8n caido / lento / timeout: NO es culpa nuestra ni requiere accion.
+              # Warning (no manda mail); el proximo run en 15 min lo reintenta.
+              echo "::warning::n8n no respondio (HTTP $HTTP) tras 3 intentos. Reintento en el proximo run."
+              exit 0 ;;
+          esac
+
+          # ── 3. Reactivar si esta caido ──
+          if grep -q '"active":false' /tmp/wf.json; then
             echo "Sync CAIDO -> reactivando..."
-            curl -s -X POST -H "X-N8N-API-KEY: $N8N_KEY" "$BASE/workflows/$WID/activate" -o /dev/null -w "activate -> HTTP %{http_code}\n"
-          elif echo "$STATUS" | grep -q '"active":true'; then
+            ACT=$("${CURL[@]}" -o /dev/null -w '%{http_code}' -X POST \
+                  -H "X-N8N-API-KEY: $N8N_KEY" "$BASE/workflows/$WID/activate" 2>/dev/null || echo 000)
+            echo "activate -> HTTP $ACT"
+            if [ "$ACT" != "200" ]; then
+              echo "::warning::No se pudo reactivar (HTTP $ACT). Se reintenta en el proximo run."
+              exit 0
+            fi
+            # Verificar que quedo activo de verdad (que la API diga 200 no alcanza)
+            sleep 3
+            VER=$("${CURL[@]}" -H "X-N8N-API-KEY: $N8N_KEY" "$BASE/workflows/$WID" 2>/dev/null || echo "")
+            if echo "$VER" | grep -q '"active":true'; then
+              echo "OK: el sync quedo ACTIVO."
+            else
+              echo "::warning::Se pidio la reactivacion pero sigue inactivo. Reintento en el proximo run."
+            fi
+          elif grep -q '"active":true' /tmp/wf.json; then
             echo "Sync OK, nada que hacer."
           else
-            echo "Respuesta inesperada (API key mal cargada?): $STATUS"
+            echo "::warning::Respuesta inesperada de n8n: $(head -c 300 /tmp/wf.json)"
           fi
