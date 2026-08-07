@@ -1,20 +1,30 @@
 name: n8n keepalive (Mi Dia Nutricional)
 
-# Cada 15 min chequea si el workflow de sync de n8n quedo apagado (n8n lo desactiva
-# solo cuando su instancia se reinicia por falta de RAM) y lo vuelve a prender.
-# Corre en GitHub (afuera de n8n), asi que funciona aunque la instancia se haya caido.
-# NO consume la cuota de ejecuciones de n8n (la API de activacion no cuenta como ejecucion).
+# Vigila que el workflow de sync de n8n siga ACTIVO (n8n lo desactiva solo cuando su
+# instancia se reinicia por falta de RAM). Corre en GitHub, afuera de n8n, asi que
+# funciona aunque la instancia se haya caido.
 #
-# 2026-08-07 — Endurecido tras 2 corridas canceladas (6/8): los curl no tenian limite de
-# tiempo, asi que cuando n8n no respondia el job quedaba colgado 15 MINUTOS hasta que
-# GitHub lo mataba, y eso mandaba mail de error por un problema transitorio de n8n.
-# Criterio: un hipo de n8n NO debe mandar mail (el proximo run, 15 min despues, lo arregla).
-# Solo avisa por mail lo que necesita que Gaston haga algo (API key vencida o mal cargada).
+# 2026-08-07 — Reescrito. Dos problemas encontrados:
+#  (1) Dos runs quedaron colgados 15 MIN y GitHub los cancelo -> mail de error por un
+#      hipo de n8n. Los curl no tenian --max-time. Los runs sanos tardan 6-15 SEGUNDOS.
+#  (2) MAS GRAVE: el secret N8N_API_KEY nunca existio, asi que el script salia por
+#      "exit 0" silencioso. Los ~98 runs "success" no chequeaban NADA: el keepalive
+#      era decorativo.
+#
+# Diseno nuevo, en dos niveles:
+#  NIVEL 1 (siempre, sin API key): un GET al webhook dice si el sync esta activo, porque
+#          n8n responde distinto segun el caso, y NO ejecuta el workflow (no gasta cuota):
+#            activo  -> "This webhook is not registered for GET requests..."
+#            caido   -> "The requested webhook ... is not registered"
+#  NIVEL 2 (solo si esta cargado el secret N8N_API_KEY): si esta caido, lo reactiva solo.
+#
+# Cuando manda mail: SOLO si el sync esta caido y no se pudo reactivar (ahi Gaston tiene
+# que hacer algo). Un n8n lento o un timeout de red = warning, sin mail.
 
 on:
   schedule:
     - cron: '*/15 * * * *'   # cada 15 minutos (UTC)
-  workflow_dispatch: {}       # y a mano desde la pestania Actions si queres
+  workflow_dispatch: {}       # y a mano desde la pestania Actions
 
 concurrency:
   group: keepalive-n8n
@@ -23,70 +33,79 @@ concurrency:
 jobs:
   reactivar:
     runs-on: ubuntu-latest
-    timeout-minutes: 4        # red de seguridad: los runs sanos tardan 6-15 SEGUNDOS
+    timeout-minutes: 4        # red de seguridad: nunca mas colgado 15 minutos
     steps:
-      - name: Reactivar el workflow de sync si n8n lo apago
+      - name: Vigilar (y reactivar) el sync de Mi Dia Nutricional
         env:
           N8N_KEY: ${{ secrets.N8N_API_KEY }}
         run: |
           set -uo pipefail
 
-          if [ -z "${N8N_KEY:-}" ]; then
-            echo "::error::Falta el secret N8N_API_KEY. Cargalo en Settings -> Secrets and variables -> Actions."
-            exit 1
-          fi
-
-          BASE="https://ecddaniele.app.n8n.cloud/api/v1"
+          BASE="https://ecddaniele.app.n8n.cloud"
           WID="TQDi7FTn8YUU1YYR"
-          # --max-time es LO QUE FALTABA: sin esto el curl espera para siempre.
+          HOOK="$BASE/webhook/mdn-sync"
           CURL=(curl -sS --connect-timeout 10 --max-time 25)
 
-          # ── 1. Consultar estado (3 intentos con espera creciente) ──
-          HTTP=000
+          # ── NIVEL 1: ¿esta activo? (sin API key, sin gastar cuota de n8n) ──
+          estado() {
+            local cuerpo
+            cuerpo=$("${CURL[@]}" "$HOOK" 2>/dev/null) || { echo "SIN_RESPUESTA"; return; }
+            if   echo "$cuerpo" | grep -q "not registered for GET"; then echo "ACTIVO"
+            elif echo "$cuerpo" | grep -q "is not registered";      then echo "CAIDO"
+            else echo "RARO: $(echo "$cuerpo" | head -c 200)"
+            fi
+          }
+
+          EST=""
           for i in 1 2 3; do
-            HTTP=$("${CURL[@]}" -o /tmp/wf.json -w '%{http_code}' \
-                   -H "X-N8N-API-KEY: $N8N_KEY" "$BASE/workflows/$WID" 2>/dev/null || echo 000)
-            [ "$HTTP" = "200" ] && break
-            echo "Intento $i: la API de n8n devolvio HTTP $HTTP"
+            EST=$(estado)
+            case "$EST" in ACTIVO|CAIDO) break ;; esac
+            echo "Intento $i: $EST"
             [ $i -lt 3 ] && sleep $((i * 10))
           done
 
-          # ── 2. Interpretar el resultado ──
-          case "$HTTP" in
-            200) : ;;
+          if [ "$EST" = "ACTIVO" ]; then
+            echo "Sync ACTIVO. Nada que hacer."
+            exit 0
+          fi
+
+          if [ "$EST" != "CAIDO" ]; then
+            # n8n no contesta o contesta algo inesperado: no es accionable, reintenta solo
+            echo "::warning::n8n no respondio como se esperaba tras 3 intentos ($EST). Reintento en el proximo run."
+            exit 0
+          fi
+
+          # ── NIVEL 2: esta CAIDO -> intentar reactivarlo (necesita la API key) ──
+          echo "Sync CAIDO."
+          if [ -z "${N8N_KEY:-}" ]; then
+            echo "::error::El sync de Mi Dia Nutricional esta CAIDO y no hay API key para reactivarlo."
+            echo "Arreglo a mano: entra a https://ecddaniele.app.n8n.cloud y prende el workflow 'Mi Dia Nutricional - Sync'."
+            echo "Para que se arregle solo: n8n -> Settings -> API -> crear API key, y cargala en"
+            echo "GitHub -> Settings -> Secrets and variables -> Actions -> New secret, con el nombre N8N_API_KEY."
+            exit 1
+          fi
+
+          echo "Reactivando con la API..."
+          ACT=$("${CURL[@]}" -o /dev/null -w '%{http_code}' -X POST \
+                -H "X-N8N-API-KEY: $N8N_KEY" "$BASE/api/v1/workflows/$WID/activate" 2>/dev/null || echo 000)
+          echo "activate -> HTTP $ACT"
+
+          case "$ACT" in
             401|403)
-              echo "::error::n8n rechazo la API key (HTTP $HTTP). Renovala en n8n y actualiza el secret N8N_API_KEY."
+              echo "::error::n8n rechazo la API key (HTTP $ACT). Renovala en n8n y actualiza el secret N8N_API_KEY."
               exit 1 ;;
             404)
-              echo "::error::El workflow $WID no existe en n8n (HTTP 404). Revisa el ID."
+              echo "::error::n8n no encuentra el workflow $WID (HTTP 404). Revisa el ID."
               exit 1 ;;
-            *)
-              # n8n caido / lento / timeout: NO es culpa nuestra ni requiere accion.
-              # Warning (no manda mail); el proximo run en 15 min lo reintenta.
-              echo "::warning::n8n no respondio (HTTP $HTTP) tras 3 intentos. Reintento en el proximo run."
-              exit 0 ;;
           esac
 
-          # ── 3. Reactivar si esta caido ──
-          if grep -q '"active":false' /tmp/wf.json; then
-            echo "Sync CAIDO -> reactivando..."
-            ACT=$("${CURL[@]}" -o /dev/null -w '%{http_code}' -X POST \
-                  -H "X-N8N-API-KEY: $N8N_KEY" "$BASE/workflows/$WID/activate" 2>/dev/null || echo 000)
-            echo "activate -> HTTP $ACT"
-            if [ "$ACT" != "200" ]; then
-              echo "::warning::No se pudo reactivar (HTTP $ACT). Se reintenta en el proximo run."
-              exit 0
-            fi
-            # Verificar que quedo activo de verdad (que la API diga 200 no alcanza)
-            sleep 3
-            VER=$("${CURL[@]}" -H "X-N8N-API-KEY: $N8N_KEY" "$BASE/workflows/$WID" 2>/dev/null || echo "")
-            if echo "$VER" | grep -q '"active":true'; then
-              echo "OK: el sync quedo ACTIVO."
-            else
-              echo "::warning::Se pidio la reactivacion pero sigue inactivo. Reintento en el proximo run."
-            fi
-          elif grep -q '"active":true' /tmp/wf.json; then
-            echo "Sync OK, nada que hacer."
+          # Verificar de verdad que quedo activo (que la API diga 200 no alcanza)
+          sleep 5
+          VER=$(estado)
+          if [ "$VER" = "ACTIVO" ]; then
+            echo "OK: el sync volvio a estar ACTIVO."
           else
-            echo "::warning::Respuesta inesperada de n8n: $(head -c 300 /tmp/wf.json)"
+            echo "::error::Se pidio la reactivacion (HTTP $ACT) pero el sync sigue caido ($VER)."
+            echo "Entra a https://ecddaniele.app.n8n.cloud y prendelo a mano."
+            exit 1
           fi
