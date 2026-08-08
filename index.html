@@ -79,7 +79,7 @@ const DIA_TIPICO_TEXTO = `DIA TIPICO del usuario (su base habitual):
 - Extras del dia: 2 frutas.
 Estructura: base fija = proteina magra alta; acompanamiento = energetico moderado; volumen = hortalizas; grasa = 1 cdta oliva; bebida = te verde.`;
 const SYNC_URL = 'https://ecddaniele.app.n8n.cloud/webhook/mdn-sync';
-const APP_VERSION = 'v28.3';
+const APP_VERSION = 'v28.4';
 const SYNC_CODE_STORAGE = 'miDiaNutricional_syncCode';
 const AUTOSYNC_STORAGE = 'miDiaNutricional_autoSync';
 const TIPICO_CUSTOM_STORAGE = 'miDiaNutricional_diaTipicoCustom';
@@ -984,7 +984,7 @@ function App() {
   };
 
   const catalogoTexto = () => { let s = ''; Object.entries(MEALS).forEach(([mk, meal]) => { meal.sections.forEach(sec => { s += sec.key + ' [' + meal.label + ' / ' + sec.label + ']: ' + sec.options.map(o => o.id + '=' + o.label).join(' | ') + '\n'; }); }); return s; };
-  const chatSystemPrompt = () => 'Sos el asistente nutricional dentro de la app "Mi Dia Nutricional" de Gaston. Se breve, directo, en espanol rioplatense. Confirma en una linea lo que hiciste (con kcal cuando sume comida).\n\nREGLAS DE HERRAMIENTAS:\n- Para comidas del CATALOGO (pechuga, harina de almendras, papa, hortalizas, etc.) usa seleccionar_opcion con seccion_key y opcion_id EXACTOS. NUNCA uses agregar_comida_libre para algo que esta en el catalogo.\n- agregar_comida_libre es SOLO para cosas fuera del catalogo (pizza, alfajor, leche entera, fiambre): estima vos los macros. Si es una comida de MARCA o de un restaurante especifico y no estas seguro de los macros, busca los datos en internet si tenes busqueda web disponible.\n- Si el usuario quiere cargar SOLO algunas comidas (ej "solo desayuno y media mañana"), primero usa limpiar_dia y despues selecciona SOLO esas con seleccionar_opcion.\n- cargar_dia_tipico carga el dia tipico COMPLETO; no lo uses si el usuario quiere solo una parte.\n- limpiar_dia pone todo en cero. quitar_comida_libre saca una comida libre.\n- poner_gasto carga el gasto. guardar_dia ARCHIVA el dia en el historial (distinto de ver_dia, que solo MUESTRA un resumen sin guardar). Si el usuario dice "guarda el dia", usa guardar_dia.\n- NUNCA digas que guardaste, agregaste o cargaste algo sin haber usado la herramienta correspondiente; confirma SIEMPRE con el resultado real que te devuelve la herramienta.\n- Cuando el usuario te corrija un dato, te diga una comida frecuente o una preferencia, usa "recordar" para tenerlo en cuenta a futuro.\n- Si el usuario manda una IMAGEN (captura, foto de un plato, etiqueta nutricional, menu o pantalla de otra app), leela: si es una etiqueta con valores nutricionales usalos tal cual, si es un plato estima los macros; despues carga lo que corresponda con las herramientas (agregar_comida_libre o seleccionar_opcion) y deci en una linea que viste en la imagen.\n\nCATALOGO (seccion_key [comida/seccion]: opcion_id=etiqueta):\n' + catalogoTexto() + '\nDIA TIPICO (ids que selecciona por seccion): ' + JSON.stringify(DIA_TIPICO) + '\n\nMEMORIA (lo que aprendiste de Gaston, tenelo SIEMPRE en cuenta): ' + (chatMemoria.length ? chatMemoria.map(m => '- ' + m.texto).join('\n') : '(vacia por ahora)') + '\n\nEstado actual del dia: ' + JSON.stringify(resumenDia());
+  const chatSystemPrompt = () => 'Sos el asistente nutricional dentro de la app "Mi Dia Nutricional" de Gaston. Se breve, directo, en espanol rioplatense. Confirma en una linea lo que hiciste (con kcal cuando sume comida).\n\nREGLAS DE HERRAMIENTAS:\n- Para comidas del CATALOGO (pechuga, harina de almendras, papa, hortalizas, etc.) usa seleccionar_opcion con seccion_key y opcion_id EXACTOS. NUNCA uses agregar_comida_libre para algo que esta en el catalogo.\n- agregar_comida_libre es SOLO para cosas fuera del catalogo (pizza, alfajor, leche entera, fiambre): estima vos los macros. Si es una comida de MARCA o de un restaurante especifico y no estas seguro de los macros: si el usuario te pasa un LINK, abrilo y usa los datos de esa pagina; si tenes busqueda web disponible, busca; si no tenes ninguna de las dos, estima y ACLARA que lo estimaste.\n- Si el usuario quiere cargar SOLO algunas comidas (ej "solo desayuno y media mañana"), primero usa limpiar_dia y despues selecciona SOLO esas con seleccionar_opcion.\n- cargar_dia_tipico carga el dia tipico COMPLETO; no lo uses si el usuario quiere solo una parte.\n- limpiar_dia pone todo en cero. quitar_comida_libre saca una comida libre.\n- poner_gasto carga el gasto. guardar_dia ARCHIVA el dia en el historial (distinto de ver_dia, que solo MUESTRA un resumen sin guardar). Si el usuario dice "guarda el dia", usa guardar_dia.\n- NUNCA digas que guardaste, agregaste o cargaste algo sin haber usado la herramienta correspondiente; confirma SIEMPRE con el resultado real que te devuelve la herramienta.\n- Cuando el usuario te corrija un dato, te diga una comida frecuente o una preferencia, usa "recordar" para tenerlo en cuenta a futuro.\n- Si el usuario manda una IMAGEN (captura, foto de un plato, etiqueta nutricional, menu o pantalla de otra app), leela: si es una etiqueta con valores nutricionales usalos tal cual, si es un plato estima los macros; despues carga lo que corresponda con las herramientas (agregar_comida_libre o seleccionar_opcion) y deci en una linea que viste en la imagen.\n\nCATALOGO (seccion_key [comida/seccion]: opcion_id=etiqueta):\n' + catalogoTexto() + '\nDIA TIPICO (ids que selecciona por seccion): ' + JSON.stringify(DIA_TIPICO) + '\n\nMEMORIA (lo que aprendiste de Gaston, tenelo SIEMPRE en cuenta): ' + (chatMemoria.length ? chatMemoria.map(m => '- ' + m.texto).join('\n') : '(vacia por ahora)') + '\n\nEstado actual del dia: ' + JSON.stringify(resumenDia());
 
   const procesarImg = (file) => new Promise((resolve, reject) => {
     if (!file || !file.type || file.type.indexOf('image/') !== 0) { reject(new Error('no es imagen')); return; }
@@ -1077,18 +1077,29 @@ function App() {
     const url = 'https://generativelanguage.googleapis.com/v1beta/models/' + modeloReal + ':generateContent';
     let conBusqueda = GEMINI_CON_BUSQUEDA.indexOf(chatModel) !== -1;
     let busquedaRechazada = false;
+    // urlContext SI entra en el tier gratuito (probado 2026-08-08, leyo Wikipedia OK):
+    // no busca por su cuenta, pero abre cualquier link que le pases. Sirve para pegarle
+    // la pagina de un producto y que saque los macros de la etiqueta.
+    let conUrl = true;
     for (let i = 0; i < 8; i++) {
-      const tools = conBusqueda ? [{ functionDeclarations: decls }, { googleSearch: {} }] : [{ functionDeclarations: decls }];
+      const tools = [{ functionDeclarations: decls }];
+      if (conBusqueda) tools.push({ googleSearch: {} });
+      if (conUrl) tools.push({ urlContext: {} });
+      // Para usar herramientas NATIVAS de Google (urlContext, googleSearch) JUNTO con las
+      // nuestras hay que pedir permiso explicito, si no responde 400. Probado 2026-08-08.
+      const cuerpo = { systemInstruction: { parts: [{ text: chatSystemPrompt() }] }, contents, tools, generationConfig: { maxOutputTokens: 2048 } };
+      if (conBusqueda || conUrl) cuerpo.toolConfig = { includeServerSideToolInvocations: true };
       const resp = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key },
-        body: JSON.stringify({ systemInstruction: { parts: [{ text: chatSystemPrompt() }] }, contents, tools, generationConfig: { maxOutputTokens: 2048 } })
+        body: JSON.stringify(cuerpo)
       });
       if (!resp.ok) {
         const t = await resp.text();
         // Google puede rechazar la busqueda por no aceptarla (400) o por cuota 0 (429, que es
         // lo que pasa hoy sin facturacion). En los dos casos sigo SIN busqueda en vez de morir.
         if (conBusqueda && (resp.status === 400 || resp.status === 429)) { conBusqueda = false; busquedaRechazada = true; continue; }
+        if (conUrl && (resp.status === 400 || resp.status === 429)) { conUrl = false; continue; }
         if (resp.status === 429) throw new Error('Gemini: llegaste al límite gratuito por hoy. Probá con otro modelo o esperá (se reinicia a medianoche hora del Pacífico).');
         throw new Error('Gemini ' + resp.status + ': ' + t.slice(0, 200));
       }
@@ -1104,9 +1115,16 @@ function App() {
         // si pediste el modelo "+ internet" pero Google no lo permitio, decilo: si no, parece
         // que busco y en realidad contesto de memoria
         const fuentes = ((cand.groundingMetadata || {}).groundingChunks || []).map(g => (g.web || {}).uri).filter(Boolean);
-        if (busquedaRechazada) return txt + '\n\n⚠️ _Sin buscar en internet: Google no habilita la búsqueda con esta API key (hace falta facturación en el proyecto). Esto lo contestó de memoria. Para buscar de verdad, elegí Haiku o Sonnet._';
-        if (fuentes.length) return txt + '\n\n🔗 _Fuentes:_ ' + fuentes.slice(0, 4).map((u, k) => '[' + (k + 1) + '](' + u + ')').join(' ');
-        return txt;
+        // paginas que llego a abrir con urlContext (y las que no pudo, que conviene saber)
+        const urls = ((cand.urlContextMetadata || {}).urlMetadata) || [];
+        const leidas = urls.filter(u => (u.urlRetrievalStatus || '').indexOf('SUCCESS') !== -1);
+        const fallidas = urls.filter(u => (u.urlRetrievalStatus || '').indexOf('SUCCESS') === -1);
+        let nota = '';
+        if (leidas.length) nota += '\n\n📄 _Leyó:_ ' + leidas.slice(0, 3).map((u, k) => '[' + (k + 1) + '](' + u.retrievedUrl + ')').join(' ');
+        if (fallidas.length) nota += '\n\n⚠️ _No pudo abrir ' + fallidas.length + ' link' + (fallidas.length > 1 ? 's' : '') + ' (el sitio lo bloqueó): lo de arriba puede ser de memoria._';
+        if (fuentes.length) nota += '\n\n🔗 _Fuentes:_ ' + fuentes.slice(0, 4).map((u, k) => '[' + (k + 1) + '](' + u + ')').join(' ');
+        if (busquedaRechazada && !leidas.length) nota += '\n\n⚠️ _Sin buscar en internet: Google no habilita la búsqueda con esta API key (haría falta facturación en el proyecto). Esto lo contestó de memoria. Para buscar de verdad, elegí Haiku o Sonnet — o pegale el link y lo lee._';
+        return txt + nota;
       }
       contents.push({ role: 'user', parts: calls.map(fc => ({ functionResponse: { name: fc.name, response: { resultado: ejecutarTool(fc.name, fc.args || {}) } } })) });
       await new Promise(res => setTimeout(res, 90));
