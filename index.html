@@ -79,7 +79,7 @@ const DIA_TIPICO_TEXTO = `DIA TIPICO del usuario (su base habitual):
 - Extras del dia: 2 frutas.
 Estructura: base fija = proteina magra alta; acompanamiento = energetico moderado; volumen = hortalizas; grasa = 1 cdta oliva; bebida = te verde.`;
 const SYNC_URL = 'https://ecddaniele.app.n8n.cloud/webhook/mdn-sync';
-const APP_VERSION = 'v30';
+const APP_VERSION = 'v31';
 const SYNC_CODE_STORAGE = 'miDiaNutricional_syncCode';
 const AUTOSYNC_STORAGE = 'miDiaNutricional_autoSync';
 const TIPICO_CUSTOM_STORAGE = 'miDiaNutricional_diaTipicoCustom';
@@ -100,10 +100,11 @@ const PRECIOS_DEFAULT = {
   'gpt-4o': { in: 2.50, out: 10.0 },
   'gemini-3.6-flash': { in: 0, out: 0 },       // free tier de Google AI Studio
   'gemini-3.5-flash-lite': { in: 0, out: 0 },  // idem, mas liviano (mas cuota diaria)
-  // Este usa la OTRA key (la que tiene credito cargado) y SI busca en Google.
-  // Precios oficiales del tier pago. La busqueda: 5.000 gratis por mes, despues
-  // 14 USD cada 1.000 — no se refleja aca porque no viene en el conteo de tokens.
-  'gemini-3.6-flash-web': { in: 1.50, out: 7.50 }
+  // Estos dos usan la OTRA key (la del credito). Precios oficiales del tier pago.
+  // La busqueda va aparte: 5.000 gratis por mes y despues 14 USD cada 1.000 — no
+  // aparece en el contador porque no viene en el conteo de tokens.
+  'gemini-3.6-flash-web': { in: 1.50, out: 7.50 },
+  'gemini-pro-latest': { in: 2.00, out: 12.00 }
 };
 // La busqueda de Google NO existe en el tier gratuito (probado 2026-08-08: 429 cuota 0 en
 // los 7 modelos, con los dos nombres de la herramienta y en dos versiones de la API).
@@ -111,14 +112,20 @@ const PRECIOS_DEFAULT = {
 // calorias" y cito mcdonalds.com.ar.
 const GEMINI_CON_BUSQUEDA = ['gemini-3.6-flash-web'];
 const GEMINI_ALIAS = { 'gemini-3.6-flash-web': 'gemini-3.6-flash' };  // id propio -> modelo real
+// Cada modelo dice QUE HACE (el adjetivo) y CUANTO CUESTA (el simbolo):
+//   🆓 = no gasta nada          💳 = descuenta de un saldo/tarjeta
+// Probado modelo por modelo contra la API el 2026-08-08: los Flash andan con las
+// dos keys de Google; Pro y la busqueda SOLO con la que tiene credito (con la
+// gratis dan 429). gemini-2.5-pro ya no existe para cuentas nuevas.
 const CHAT_MODELS = [
-  { id: 'gemini-3.6-flash', label: 'Gemini Flash · GRATIS', prov: 'google' },
-  { id: 'gemini-3.5-flash-lite', label: 'Gemini Lite · GRATIS', prov: 'google' },
-  { id: 'gemini-3.6-flash-web', label: 'Gemini + BUSCAR en Google · con crédito', prov: 'google', pago: true },
-  { id: 'claude-haiku-4-5-20251001', label: 'Haiku · rápido', prov: 'anthropic' },
-  { id: 'claude-sonnet-4-6', label: 'Sonnet · potente', prov: 'anthropic' },
-  { id: 'gpt-4o-mini', label: 'GPT-4o-mini', prov: 'openai' },
-  { id: 'gpt-4o', label: 'GPT-4o', prov: 'openai' }
+  { id: 'gemini-3.6-flash',        label: '🆓 Gemini Flash · equilibrado',        prov: 'google' },
+  { id: 'gemini-3.5-flash-lite',   label: '🆓 Gemini Lite · el más rápido',       prov: 'google' },
+  { id: 'gemini-pro-latest',       label: '💳 Gemini Pro · el más potente',       prov: 'google',    pago: true },
+  { id: 'gemini-3.6-flash-web',    label: '💳 Gemini + internet · busca y cita',  prov: 'google',    pago: true },
+  { id: 'claude-haiku-4-5-20251001', label: '💳 Haiku · rápido',                  prov: 'anthropic' },
+  { id: 'claude-sonnet-4-6',       label: '💳 Sonnet · el más capaz',             prov: 'anthropic' },
+  { id: 'gpt-4o-mini',             label: '💳 GPT-4o mini · rápido y barato',     prov: 'openai' },
+  { id: 'gpt-4o',                  label: '💳 GPT-4o · potente',                  prov: 'openai' }
 ];
 const CHAT_TOOLS = [
   { name: 'agregar_comida_libre', description: 'Agrega una comida que NO esta en el catalogo (pizza, alfajor, asado, fiambre, etc.) al dia de hoy. Si el usuario no da los macros, ESTIMALOS vos con tu conocimiento nutricional.', schema: { type: 'object', properties: { descripcion: { type: 'string', description: 'que comio, ej: 1 alfajor triple' }, kcal: { type: 'number', description: 'calorias totales' }, proteina: { type: 'number', description: 'gramos de proteina' }, carbohidratos: { type: 'number', description: 'gramos de carbohidratos' }, grasa: { type: 'number', description: 'gramos de grasa' } }, required: ['descripcion', 'kcal', 'proteina', 'carbohidratos', 'grasa'] } },
