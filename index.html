@@ -79,7 +79,7 @@ const DIA_TIPICO_TEXTO = `DIA TIPICO del usuario (su base habitual):
 - Extras del dia: 2 frutas.
 Estructura: base fija = proteina magra alta; acompanamiento = energetico moderado; volumen = hortalizas; grasa = 1 cdta oliva; bebida = te verde.`;
 const SYNC_URL = 'https://ecddaniele.app.n8n.cloud/webhook/mdn-sync';
-const APP_VERSION = 'v28.2';
+const APP_VERSION = 'v28.3';
 const SYNC_CODE_STORAGE = 'miDiaNutricional_syncCode';
 const AUTOSYNC_STORAGE = 'miDiaNutricional_autoSync';
 const TIPICO_CUSTOM_STORAGE = 'miDiaNutricional_diaTipicoCustom';
@@ -98,16 +98,19 @@ const PRECIOS_DEFAULT = {
   'gpt-4o-mini': { in: 0.15, out: 0.60 },
   'gpt-4o': { in: 2.50, out: 10.0 },
   'gemini-3.6-flash': { in: 0, out: 0 },       // free tier de Google AI Studio
+  'gemini-3.6-flash-web': { in: 0, out: 0 },   // el mismo, pero pidiendo busqueda de Google
   'gemini-3.5-flash-lite': { in: 0, out: 0 }   // idem, mas liviano (mas cuota diaria)
 };
-// La busqueda de Google NO entra en el tier gratuito (probado 2026-08-08 contra la API real:
-// los 3.x devuelven 429 al pedir googleSearch, y los 2.5 —que segun la doc si la tenian—
-// dan 404 "no longer available to new users"). La lista queda vacia a proposito: si Google
-// la habilita algun dia, se agrega el modelo aca y funciona sin tocar nada mas.
-// Para buscar en internet estan Claude (Haiku/Sonnet), que si la traen.
-const GEMINI_CON_BUSQUEDA = [];
+// Modelos a los que se les PIDE la busqueda de Google. Con una API key sin facturacion
+// hoy devuelve 429 (cuota 0) — probado 2026-08-08: el mismo modelo da 200 sin busqueda y
+// 429 con busqueda, en el mismo minuto, en los 7 modelos disponibles. Queda pedida igual:
+// si se habilita facturacion en el proyecto (las primeras del mes no se cobran) o Google
+// la abre al tier gratis, empieza a andar sola. Si la rechaza, el chat sigue sin busqueda.
+const GEMINI_CON_BUSQUEDA = ['gemini-3.6-flash-web'];
+const GEMINI_ALIAS = { 'gemini-3.6-flash-web': 'gemini-3.6-flash' };  // id propio -> modelo real
 const CHAT_MODELS = [
   { id: 'gemini-3.6-flash', label: 'Gemini Flash · GRATIS', prov: 'google' },
+  { id: 'gemini-3.6-flash-web', label: 'Gemini Flash + internet · GRATIS', prov: 'google' },
   { id: 'gemini-3.5-flash-lite', label: 'Gemini Lite · GRATIS', prov: 'google' },
   { id: 'claude-haiku-4-5-20251001', label: 'Haiku · rápido', prov: 'anthropic' },
   { id: 'claude-sonnet-4-6', label: 'Sonnet · potente', prov: 'anthropic' },
@@ -1070,10 +1073,10 @@ function App() {
         ...(m.text ? [{ text: m.text }] : [])
       ]
     }));
-    const url = 'https://generativelanguage.googleapis.com/v1beta/models/' + chatModel + ':generateContent';
-    // Solo pido busqueda si el modelo la tiene GRATIS (los 2.5). Pedirla en un 3.x da 400
-    // y gasta un viaje de ida y vuelta al pedo.
+    const modeloReal = GEMINI_ALIAS[chatModel] || chatModel;   // "…-web" es el mismo modelo, con busqueda
+    const url = 'https://generativelanguage.googleapis.com/v1beta/models/' + modeloReal + ':generateContent';
     let conBusqueda = GEMINI_CON_BUSQUEDA.indexOf(chatModel) !== -1;
+    let busquedaRechazada = false;
     for (let i = 0; i < 8; i++) {
       const tools = conBusqueda ? [{ functionDeclarations: decls }, { googleSearch: {} }] : [{ functionDeclarations: decls }];
       const resp = await fetch(url, {
@@ -1083,8 +1086,9 @@ function App() {
       });
       if (!resp.ok) {
         const t = await resp.text();
-        // si este modelo no acepta busqueda + funciones juntas, sigo sin busqueda en vez de morir
-        if (conBusqueda && resp.status === 400) { conBusqueda = false; continue; }
+        // Google puede rechazar la busqueda por no aceptarla (400) o por cuota 0 (429, que es
+        // lo que pasa hoy sin facturacion). En los dos casos sigo SIN busqueda en vez de morir.
+        if (conBusqueda && (resp.status === 400 || resp.status === 429)) { conBusqueda = false; busquedaRechazada = true; continue; }
         if (resp.status === 429) throw new Error('Gemini: llegaste al límite gratuito por hoy. Probá con otro modelo o esperá (se reinicia a medianoche hora del Pacífico).');
         throw new Error('Gemini ' + resp.status + ': ' + t.slice(0, 200));
       }
@@ -1095,7 +1099,15 @@ function App() {
       const parts = (cand.content && cand.content.parts) || [];
       contents.push({ role: 'model', parts });
       const calls = parts.filter(p => p.functionCall).map(p => p.functionCall);
-      if (calls.length === 0) return parts.filter(p => p.text).map(p => p.text).join('\n').trim() || '(listo)';
+      if (calls.length === 0) {
+        const txt = parts.filter(p => p.text).map(p => p.text).join('\n').trim() || '(listo)';
+        // si pediste el modelo "+ internet" pero Google no lo permitio, decilo: si no, parece
+        // que busco y en realidad contesto de memoria
+        const fuentes = ((cand.groundingMetadata || {}).groundingChunks || []).map(g => (g.web || {}).uri).filter(Boolean);
+        if (busquedaRechazada) return txt + '\n\n⚠️ _Sin buscar en internet: Google no habilita la búsqueda con esta API key (hace falta facturación en el proyecto). Esto lo contestó de memoria. Para buscar de verdad, elegí Haiku o Sonnet._';
+        if (fuentes.length) return txt + '\n\n🔗 _Fuentes:_ ' + fuentes.slice(0, 4).map((u, k) => '[' + (k + 1) + '](' + u + ')').join(' ');
+        return txt;
+      }
       contents.push({ role: 'user', parts: calls.map(fc => ({ functionResponse: { name: fc.name, response: { resultado: ejecutarTool(fc.name, fc.args || {}) } } })) });
       await new Promise(res => setTimeout(res, 90));
     }
