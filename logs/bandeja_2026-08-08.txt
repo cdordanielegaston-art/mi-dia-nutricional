@@ -1,0 +1,5 @@
+[2026-08-08 11:59:37] bandeja arriba (silenciosa, sin abrir la app)
+[2026-08-08 12:00:11] ya habia una instancia corriendo, no arranco otra
+[2026-08-08 12:00:30] abierta -> file:///D:/Datos%20Gaston/Desktop/Claude%20Code/mi_dia_nutricional_pwa/index.html
+[2026-08-08 12:01:10] abierta -> file:///D:/Datos%20Gaston/Desktop/Claude%20Code/mi_dia_nutricional_pwa/index.html
+[2026-08-08 12:01:35] bandeja arriba (silenciosa, sin abrir la app)

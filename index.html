@@ -79,7 +79,7 @@ const DIA_TIPICO_TEXTO = `DIA TIPICO del usuario (su base habitual):
 - Extras del dia: 2 frutas.
 Estructura: base fija = proteina magra alta; acompanamiento = energetico moderado; volumen = hortalizas; grasa = 1 cdta oliva; bebida = te verde.`;
 const SYNC_URL = 'https://ecddaniele.app.n8n.cloud/webhook/mdn-sync';
-const APP_VERSION = 'v29';
+const APP_VERSION = 'v30';
 const SYNC_CODE_STORAGE = 'miDiaNutricional_syncCode';
 const AUTOSYNC_STORAGE = 'miDiaNutricional_autoSync';
 const TIPICO_CUSTOM_STORAGE = 'miDiaNutricional_diaTipicoCustom';
@@ -917,6 +917,7 @@ function App() {
   const [chatModel, setChatModel] = useState(() => { try { return localStorage.getItem(CHAT_MODEL_STORAGE) || 'claude-haiku-4-5-20251001'; } catch(e){ return 'claude-haiku-4-5-20251001'; } });
   const [chatMsgs, setChatMsgs] = useState([]);
   const [chatInput, setChatInput] = useState("");
+  const [chatArriba, setChatArriba] = useState(false);   // el mismo asistente, arriba de todo
   const [chatBusy, setChatBusy] = useState(false);
   const [showChat, setShowChat] = useState(false);
   const [showChatCfg, setShowChatCfg] = useState(false);
@@ -1323,6 +1324,56 @@ function App() {
 
   return (
     <div style={s.wrap}>
+      {/* ===== ASISTENTE ARRIBA (el MISMO chat de abajo: mismo estado, mismo motor) =====
+           Para no tener que scrollear hasta el fondo cada vez que le querés decir algo.
+           El de abajo sigue estando igual, con el historial completo. */}
+      <div style={{ position: "fixed", top: 10, right: 10, zIndex: 900, width: chatArriba ? "min(370px, calc(100vw - 20px))" : "auto" }}>
+        {!chatArriba && (
+          <button className="btn" onClick={() => setChatArriba(true)} title="Escribirle al asistente"
+            style={{ background: "linear-gradient(135deg,#6C5CE7,#4834d4)", color: "#fff", border: "none", borderRadius: 22,
+                     padding: "9px 15px", fontSize: 13, fontWeight: 800, boxShadow: "0 4px 14px #0009", cursor: "pointer" }}>
+            💬 {chatBusy ? "pensando…" : "Escribile"}
+          </button>
+        )}
+        {chatArriba && (
+          <div style={{ background: "#131D35", border: "1.5px solid #6C5CE7", borderRadius: 12, boxShadow: "0 8px 28px #000B", overflow: "hidden" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 10px", borderBottom: "1px solid #1A2744" }}>
+              <span style={{ fontSize: 12, fontWeight: 800, color: "#fff" }}>💬 Asistente</span>
+              <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                <button className="btn" title="Ver la conversación completa"
+                  onClick={() => { setShowChat(true); setChatArriba(false); setTimeout(() => { const el = document.getElementById('asistente'); if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' }); }, 60); }}
+                  style={{ background: "transparent", border: "1px solid #1A2744", borderRadius: 6, color: "#8899BB", padding: "3px 8px", fontSize: 11 }}>ver todo ↓</button>
+                <button className="btn" onClick={() => setChatArriba(false)} title="Minimizar"
+                  style={{ background: "transparent", border: "none", color: "#8899BB", fontSize: 16, fontWeight: 700, padding: "0 4px" }}>×</button>
+              </div>
+            </div>
+            {chatMsgs.length > 0 && (
+              <div style={{ maxHeight: 210, overflowY: "auto", padding: "8px 10px", background: "#0B1120" }}>
+                {chatMsgs.slice(-4).map((m, i) => (
+                  <div key={i} style={{ display: "flex", justifyContent: m.role === 'user' ? "flex-end" : "flex-start", marginBottom: 6 }}>
+                    <div style={{ maxWidth: "88%", padding: "6px 9px", borderRadius: 9, fontSize: 12, lineHeight: 1.4, whiteSpace: "pre-wrap",
+                                  background: m.role === 'user' ? "#6C5CE7" : "#1A2744", color: "#fff" }}>{m.text}</div>
+                  </div>
+                ))}
+                {chatBusy && <div style={{ fontSize: 11, color: "#8899BB", fontStyle: "italic" }}>pensando…</div>}
+              </div>
+            )}
+            <div style={{ display: "flex", gap: 6, padding: 8 }}>
+              <input type="text" value={chatInput} autoFocus
+                onChange={e => setChatInput(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter') chatSend(); if (e.key === 'Escape') setChatArriba(false); }}
+                onPaste={e => { const items = e.clipboardData && e.clipboardData.items; if (items) { const fs = []; for (let i = 0; i < items.length; i++) { if (items[i].type && items[i].type.indexOf('image') === 0) { const f = items[i].getAsFile(); if (f) fs.push(f); } } if (fs.length) { e.preventDefault(); addChatImgs(fs); } } }}
+                placeholder={chatImgs.length ? chatImgs.length + " imagen(es) lista(s)…" : "Decile algo o pegá una captura…"}
+                style={{ flex: 1, boxSizing: "border-box", fontSize: 13 }} />
+              <button className="btn" onClick={chatSend} disabled={chatBusy}
+                style={{ background: chatBusy ? "#1A2744" : "linear-gradient(135deg,#6C5CE7,#4834d4)", color: "#fff", border: "none",
+                         borderRadius: 8, padding: "0 13px", fontSize: 15, fontWeight: 800, opacity: chatBusy ? 0.6 : 1 }}>➤</button>
+            </div>
+            {chatErr && <div style={{ fontSize: 10, color: "#FF8C42", padding: "0 10px 8px" }}>{chatErr}</div>}
+          </div>
+        )}
+      </div>
+
       {/* FLOATING SIDEBAR */}
       <div className="day-sidebar">
         <div style={{fontSize:8,color:"#8899BB",fontWeight:700,letterSpacing:1,marginBottom:10,textAlign:"center"}}>HOY</div>
@@ -1918,7 +1969,7 @@ function App() {
       </div>
 
       {/* ===== CHAT IA (abajo de todo) ===== */}
-      <div style={{ marginTop: 24, background: "#131D35", border: "1.5px solid #6C5CE7", borderRadius: 12, overflow: "hidden" }}>
+      <div id="asistente" style={{ marginTop: 24, background: "#131D35", border: "1.5px solid #6C5CE7", borderRadius: 12, overflow: "hidden" }}>
         <div onClick={() => setShowChat(!showChat)} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "12px 14px", cursor: "pointer", userSelect: "none" }}>
           <div style={{ fontSize: 14, fontWeight: 800, color: "#fff" }}>💬 Asistente <span style={{ fontSize: 10, color: "#8899BB", fontWeight: 500 }}>· hablale natural</span></div>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
