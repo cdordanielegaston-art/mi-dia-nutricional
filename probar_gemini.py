@@ -25,7 +25,8 @@ def contexto_ssl():
     return ctx
 
 MODELO = "gemini-3.6-flash"
-URL = f"https://generativelanguage.googleapis.com/v1beta/models/{MODELO}:generateContent"
+MODELO_BUSQUEDA = "gemini-2.5-flash"   # el unico con Google Search GRATIS (500/dia)
+def url_de(m): return f"https://generativelanguage.googleapis.com/v1beta/models/{m}:generateContent"
 
 # Las mismas 2 herramientas que mas se usan en la app (una con parametros, una sin)
 DECLS = [
@@ -39,8 +40,8 @@ DECLS = [
     {"name": "ver_dia", "description": "Devuelve el resumen del dia actual."},
 ]
 
-def pedir(body, key):
-    req = urllib.request.Request(URL, method="POST",
+def pedir(body, key, modelo=MODELO):
+    req = urllib.request.Request(url_de(modelo), method="POST",
         data=json.dumps(body).encode("utf-8"),
         headers={"Content-Type": "application/json", "x-goog-api-key": key})
     try:
@@ -84,39 +85,50 @@ def main():
                    "contents": [{"role": "user", "parts": [{"text": "Comi un alfajor de chocolate"}]}],
                    "tools": [{"functionDeclarations": DECLS}],
                    "generationConfig": {"maxOutputTokens": 2048}}, key)
-    llamada = next((p["functionCall"] for p in partes(d) if "functionCall" in p), None)
+    parts_modelo = partes(d)
+    llamada = next((p["functionCall"] for p in parts_modelo if "functionCall" in p), None)
     if st == 200 and llamada:
         print(f"OK -> pidio {llamada['name']}({json.dumps(llamada.get('args', {}), ensure_ascii=False)[:80]})")
     else:
         print("FALLA:", st, str(d)[:300]); fallos.append("herramientas")
 
-    # 3) Devolverle el resultado de la herramienta (el viaje de vuelta)
+    # 3) Devolverle el resultado de la herramienta (el viaje de vuelta).
+    #    CLAVE: hay que reenviar las parts del modelo TAL CUAL vinieron. Gemini 3 mete un
+    #    'thoughtSignature' adentro de la functionCall y si lo perdes por el camino
+    #    contesta 400. Por eso se reenvia parts_modelo entero, no una copia armada a mano.
     print("[3/4] Cierra el circuito con el resultado...", end=" ", flush=True)
     if llamada:
+        firma = any("thoughtSignature" in p or "thought_signature" in p for p in parts_modelo)
         st, d = pedir({"contents": [
                           {"role": "user", "parts": [{"text": "Comi un alfajor de chocolate"}]},
-                          {"role": "model", "parts": [{"functionCall": llamada}]},
+                          {"role": "model", "parts": parts_modelo},   # <- tal cual vino
                           {"role": "user", "parts": [{"functionResponse": {"name": llamada["name"],
                                                      "response": {"resultado": {"ok": True, "kcal_total_dia": 1890}}}}]}],
                        "tools": [{"functionDeclarations": DECLS}],
                        "generationConfig": {"maxOutputTokens": 2048}}, key)
         if st == 200 and any("text" in p for p in partes(d)):
-            print("OK ->", " ".join(p.get("text", "") for p in partes(d)).strip()[:90])
+            print("OK" + (" (con thought_signature)" if firma else "") + " ->",
+                  " ".join(p.get("text", "") for p in partes(d)).strip()[:80])
         else:
             print("FALLA:", st, str(d)[:300]); fallos.append("resultado de herramienta")
     else:
         print("SALTEADO (fallo el paso 2)"); fallos.append("resultado de herramienta")
 
-    # 4) Busqueda de Google + herramientas propias en el MISMO pedido
-    print("[4/4] Busqueda web junto con las herramientas...", end=" ", flush=True)
+    # 4) Busqueda de Google. Verificado el 2026-08-08: NO entra en el tier gratuito.
+    #    Los 3.x devuelven 429 al pedir googleSearch y los 2.5 (que segun la doc si la
+    #    tenian, 500/dia) dan 404 "no longer available to new users". Se chequea igual
+    #    por si Google la habilita: el dia que de 200, agregar el modelo a
+    #    GEMINI_CON_BUSQUEDA en index.html y queda andando.
+    print("[4/4] Busqueda web (hoy NO esta en el tier gratis)...", end=" ", flush=True)
     st, d = pedir({"contents": [{"role": "user", "parts": [{"text": "Cuantas calorias tiene una Big Mac segun McDonald's?"}]}],
                    "tools": [{"functionDeclarations": DECLS}, {"googleSearch": {}}],
                    "generationConfig": {"maxOutputTokens": 2048}}, key)
     if st == 200:
-        print("OK (se pueden combinar)")
+        print("¡AHORA SI ANDA! -> agregar el modelo a GEMINI_CON_BUSQUEDA en index.html")
+    elif st == 429:
+        print("sigue sin estar (429, cuota 0). Esperado: para buscar en internet usa Claude.")
     else:
-        print(f"NO se combinan (HTTP {st}) -> la app sigue sin busqueda, no se rompe")
-        fallos.append("busqueda+herramientas (degrada solo)")
+        print(f"no disponible (HTTP {st}). Esperado: para buscar en internet usa Claude.")
 
     print("\n" + "=" * 58)
     duros = [f for f in fallos if "degrada" not in f]

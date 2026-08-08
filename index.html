@@ -79,7 +79,7 @@ const DIA_TIPICO_TEXTO = `DIA TIPICO del usuario (su base habitual):
 - Extras del dia: 2 frutas.
 Estructura: base fija = proteina magra alta; acompanamiento = energetico moderado; volumen = hortalizas; grasa = 1 cdta oliva; bebida = te verde.`;
 const SYNC_URL = 'https://ecddaniele.app.n8n.cloud/webhook/mdn-sync';
-const APP_VERSION = 'v28.1';
+const APP_VERSION = 'v28.2';
 const SYNC_CODE_STORAGE = 'miDiaNutricional_syncCode';
 const AUTOSYNC_STORAGE = 'miDiaNutricional_autoSync';
 const TIPICO_CUSTOM_STORAGE = 'miDiaNutricional_diaTipicoCustom';
@@ -98,15 +98,16 @@ const PRECIOS_DEFAULT = {
   'gpt-4o-mini': { in: 0.15, out: 0.60 },
   'gpt-4o': { in: 2.50, out: 10.0 },
   'gemini-3.6-flash': { in: 0, out: 0 },       // free tier de Google AI Studio
-  'gemini-3.5-flash-lite': { in: 0, out: 0 },  // idem, mas liviano (mas cuota diaria)
-  'gemini-2.5-flash': { in: 0, out: 0 }        // idem + es el UNICO gratis con busqueda de Google
+  'gemini-3.5-flash-lite': { in: 0, out: 0 }   // idem, mas liviano (mas cuota diaria)
 };
-// OJO: la busqueda de Google en el tier GRATIS solo esta en los 2.5 (500 busquedas/dia,
-// compartidas entre 2.5-flash y 2.5-flash-lite). En los 3.x el grounding es de pago.
-const GEMINI_CON_BUSQUEDA = ['gemini-2.5-flash', 'gemini-2.5-flash-lite'];
+// La busqueda de Google NO entra en el tier gratuito (probado 2026-08-08 contra la API real:
+// los 3.x devuelven 429 al pedir googleSearch, y los 2.5 —que segun la doc si la tenian—
+// dan 404 "no longer available to new users"). La lista queda vacia a proposito: si Google
+// la habilita algun dia, se agrega el modelo aca y funciona sin tocar nada mas.
+// Para buscar en internet estan Claude (Haiku/Sonnet), que si la traen.
+const GEMINI_CON_BUSQUEDA = [];
 const CHAT_MODELS = [
   { id: 'gemini-3.6-flash', label: 'Gemini Flash · GRATIS', prov: 'google' },
-  { id: 'gemini-2.5-flash', label: 'Gemini + buscar en internet · GRATIS', prov: 'google' },
   { id: 'gemini-3.5-flash-lite', label: 'Gemini Lite · GRATIS', prov: 'google' },
   { id: 'claude-haiku-4-5-20251001', label: 'Haiku · rápido', prov: 'anthropic' },
   { id: 'claude-sonnet-4-6', label: 'Sonnet · potente', prov: 'anthropic' },
