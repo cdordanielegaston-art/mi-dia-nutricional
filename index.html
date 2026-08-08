@@ -79,7 +79,7 @@ const DIA_TIPICO_TEXTO = `DIA TIPICO del usuario (su base habitual):
 - Extras del dia: 2 frutas.
 Estructura: base fija = proteina magra alta; acompanamiento = energetico moderado; volumen = hortalizas; grasa = 1 cdta oliva; bebida = te verde.`;
 const SYNC_URL = 'https://ecddaniele.app.n8n.cloud/webhook/mdn-sync';
-const APP_VERSION = 'v31';
+const APP_VERSION = 'v32';
 const SYNC_CODE_STORAGE = 'miDiaNutricional_syncCode';
 const AUTOSYNC_STORAGE = 'miDiaNutricional_autoSync';
 const TIPICO_CUSTOM_STORAGE = 'miDiaNutricional_diaTipicoCustom';
@@ -2122,6 +2122,61 @@ if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register('./sw.js').catch(function (e) { console.warn('SW no registrado:', e); });
   });
 }
+
+/* ── PARACAIDAS ──────────────────────────────────────────────────────────────
+   Si la app no llega a dibujarse (pantalla en blanco), en vez de dejarte mirando
+   la nada aparece un cartel con un boton que borra lo guardado y arranca de cero.
+   Pasó en el celular el 2026-08-08: el service worker habia quedado clavado con
+   una version rota y no habia forma de arreglarlo desde adentro de la app.      */
+(function () {
+  var LISTO = false;
+  var marcar = function () { LISTO = true; };
+  // si React monto algo, no hay problema
+  setTimeout(function () {
+    var root = document.getElementById('root');
+    if (root && root.children.length > 0) marcar();
+  }, 1000);
+
+  setTimeout(function () {
+    var root = document.getElementById('root');
+    if (LISTO || (root && root.children.length > 0)) return;
+
+    var d = document.createElement('div');
+    d.style.cssText = 'position:fixed;inset:0;z-index:99999;background:#0B1120;color:#fff;' +
+      'display:flex;flex-direction:column;align-items:center;justify-content:center;' +
+      'gap:14px;padding:24px;text-align:center;font-family:system-ui,-apple-system,Segoe UI,sans-serif';
+    d.innerHTML =
+      '<div style="font-size:44px">🍲</div>' +
+      '<div style="font-size:17px;font-weight:800">La app no llegó a abrir</div>' +
+      '<div style="font-size:13px;color:#8899BB;line-height:1.6;max-width:330px">' +
+      'Suele ser una versión vieja que quedó guardada en el teléfono. ' +
+      'El botón la borra y baja la última. <b>No perdés tus comidas</b>: están en la nube.</div>' +
+      '<button id="btnReparar" style="background:linear-gradient(135deg,#6C5CE7,#4834d4);color:#fff;' +
+      'border:none;border-radius:10px;padding:13px 26px;font-size:15px;font-weight:800">Reparar y reabrir</button>' +
+      '<div style="font-size:11px;color:#8899BB">Si vuelve a fallar, abrila desde el navegador en vez del ícono.</div>';
+    document.body.appendChild(d);
+
+    document.getElementById('btnReparar').onclick = function () {
+      this.textContent = 'Reparando…'; this.disabled = true;
+      var fin = function () { location.reload(true); };
+      try {
+        var tareas = [];
+        if (window.caches && caches.keys) {
+          tareas.push(caches.keys().then(function (ks) {
+            return Promise.all(ks.map(function (k) { return caches.delete(k); }));
+          }));
+        }
+        if (navigator.serviceWorker && navigator.serviceWorker.getRegistrations) {
+          tareas.push(navigator.serviceWorker.getRegistrations().then(function (rs) {
+            return Promise.all(rs.map(function (r) { return r.unregister(); }));
+          }));
+        }
+        Promise.all(tareas).then(fin).catch(fin);
+        setTimeout(fin, 4000);   // pase lo que pase, recarga
+      } catch (e) { fin(); }
+    };
+  }, 12000);   // 12 s: el celular con Babel tarda, no hay que apurarse
+})();
 </script>
 </body>
 </html>
