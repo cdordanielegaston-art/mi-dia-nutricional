@@ -79,7 +79,7 @@ const DIA_TIPICO_TEXTO = `DIA TIPICO del usuario (su base habitual):
 - Extras del dia: 2 frutas.
 Estructura: base fija = proteina magra alta; acompanamiento = energetico moderado; volumen = hortalizas; grasa = 1 cdta oliva; bebida = te verde.`;
 const SYNC_URL = 'https://ecddaniele.app.n8n.cloud/webhook/mdn-sync';
-const APP_VERSION = 'v28';
+const APP_VERSION = 'v28.1';
 const SYNC_CODE_STORAGE = 'miDiaNutricional_syncCode';
 const AUTOSYNC_STORAGE = 'miDiaNutricional_autoSync';
 const TIPICO_CUSTOM_STORAGE = 'miDiaNutricional_diaTipicoCustom';
@@ -98,10 +98,15 @@ const PRECIOS_DEFAULT = {
   'gpt-4o-mini': { in: 0.15, out: 0.60 },
   'gpt-4o': { in: 2.50, out: 10.0 },
   'gemini-3.6-flash': { in: 0, out: 0 },       // free tier de Google AI Studio
-  'gemini-3.5-flash-lite': { in: 0, out: 0 }   // idem, mas liviano (mas cuota diaria)
+  'gemini-3.5-flash-lite': { in: 0, out: 0 },  // idem, mas liviano (mas cuota diaria)
+  'gemini-2.5-flash': { in: 0, out: 0 }        // idem + es el UNICO gratis con busqueda de Google
 };
+// OJO: la busqueda de Google en el tier GRATIS solo esta en los 2.5 (500 busquedas/dia,
+// compartidas entre 2.5-flash y 2.5-flash-lite). En los 3.x el grounding es de pago.
+const GEMINI_CON_BUSQUEDA = ['gemini-2.5-flash', 'gemini-2.5-flash-lite'];
 const CHAT_MODELS = [
   { id: 'gemini-3.6-flash', label: 'Gemini Flash · GRATIS', prov: 'google' },
+  { id: 'gemini-2.5-flash', label: 'Gemini + buscar en internet · GRATIS', prov: 'google' },
   { id: 'gemini-3.5-flash-lite', label: 'Gemini Lite · GRATIS', prov: 'google' },
   { id: 'claude-haiku-4-5-20251001', label: 'Haiku · rápido', prov: 'anthropic' },
   { id: 'claude-sonnet-4-6', label: 'Sonnet · potente', prov: 'anthropic' },
@@ -1065,7 +1070,9 @@ function App() {
       ]
     }));
     const url = 'https://generativelanguage.googleapis.com/v1beta/models/' + chatModel + ':generateContent';
-    let conBusqueda = true;  // Gemini 3 combina busqueda de Google + funciones propias
+    // Solo pido busqueda si el modelo la tiene GRATIS (los 2.5). Pedirla en un 3.x da 400
+    // y gasta un viaje de ida y vuelta al pedo.
+    let conBusqueda = GEMINI_CON_BUSQUEDA.indexOf(chatModel) !== -1;
     for (let i = 0; i < 8; i++) {
       const tools = conBusqueda ? [{ functionDeclarations: decls }, { googleSearch: {} }] : [{ functionDeclarations: decls }];
       const resp = await fetch(url, {

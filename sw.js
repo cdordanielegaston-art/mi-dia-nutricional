@@ -1,4 +1,4 @@
-const CACHE = 'mdn-v28';
+const CACHE = 'mdn-v28.1';
 const ASSETS = [
   './',
   './index.html',
