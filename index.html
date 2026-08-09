@@ -79,7 +79,7 @@ const DIA_TIPICO_TEXTO = `DIA TIPICO del usuario (su base habitual):
 - Extras del dia: 2 frutas.
 Estructura: base fija = proteina magra alta; acompanamiento = energetico moderado; volumen = hortalizas; grasa = 1 cdta oliva; bebida = te verde.`;
 const SYNC_URL = 'https://ecddaniele.app.n8n.cloud/webhook/mdn-sync';
-const APP_VERSION = 'v34';
+const APP_VERSION = 'v35';
 const SYNC_CODE_STORAGE = 'miDiaNutricional_syncCode';
 const AUTOSYNC_STORAGE = 'miDiaNutricional_autoSync';
 const TIPICO_CUSTOM_STORAGE = 'miDiaNutricional_diaTipicoCustom';
@@ -2099,8 +2099,37 @@ function App() {
               <button className="btn" onClick={() => setShowChatCfg(!showChatCfg)} title="API key" style={{ background: "transparent", border: "1px solid #1A2744", borderRadius: 6, color: (anthropicKey || geminiKey || geminiKeyPago || apiKey) ? "#00E5A0" : "#FF8C42", padding: "5px 9px", fontSize: 13 }}>⚙️</button>
               {chatMsgs.length > 0 && <button className="btn" onClick={() => setChatMsgs([])} title="Limpiar chat" style={{ background: "transparent", border: "1px solid #1A2744", borderRadius: 6, color: "#8899BB", padding: "5px 9px", fontSize: 13 }}>🗑</button>}
             </div>
+            {/* Aviso solo cuando elegis el inestable: que no haya que abrir el ⚙️ para enterarse */}
+            {chatModel === 'gemini-3.6-flash' && (
+              <div style={{ fontSize: 10, color: "#FF8C42", background: "#FF8C4212", border: "1px solid #FF8C4433", borderRadius: 6, padding: "5px 8px", marginBottom: 8, lineHeight: 1.5 }}>
+                ⚠️ Este a veces tarda mucho (medido: 4 s una vez, 76 s otra — Google satura el gratis).
+                Si va lento, elegí <b>Gemini rápido</b>.
+              </div>
+            )}
             {showChatCfg && (
               <div style={{ marginBottom: 8, padding: "8px 10px", background: "#0B1120", borderRadius: 8 }}>
+                {/* Guia rapida: cual conviene y por que. Con los tiempos REALES medidos,
+                    para no tener que acordarse de la conversacion en la que salio. */}
+                <details style={{ marginBottom: 8, background: "#0F1830", borderRadius: 8, padding: "7px 9px" }}>
+                  <summary style={{ fontSize: 11, fontWeight: 800, color: "#FFD93D", cursor: "pointer", userSelect: "none" }}>
+                    🧭 ¿Cuál conviene? (medido, 8-ago-2026)
+                  </summary>
+                  <div style={{ fontSize: 10.5, color: "#C8D6E5", lineHeight: 1.65, marginTop: 7 }}>
+                    <div style={{ color: "#00E5A0", fontWeight: 700, marginTop: 2 }}>🆓 Con la key gratis de Google</div>
+                    <div><b>Gemini rápido</b> — ~3 s y siempre igual. <b>Es el que conviene para el día a día</b>: para cargar comida no hace falta más.</div>
+                    <div style={{ color: "#FF8C42" }}><b>Gemini Flash</b> — ⚠️ <b>errático</b>: el mismo pedido tardó 4 s una vez y <b>76 s</b> la otra. No es tu internet: Google satura el servicio gratuito. <b>Si el chat va lento, es este</b> — pasate al rápido.</div>
+                    <div style={{ color: "#FF8C42", fontWeight: 700, marginTop: 6 }}>💳 Con la key de crédito</div>
+                    <div><b>Gemini rápido (sin tope)</b> — igual de veloz, pero no se queda sin cuota diaria.</div>
+                    <div><b>Gemini + internet</b> — el único que busca en Google y te cita la fuente con link. Con la key gratis <b>no existe la búsqueda</b>, ni con este ni con ninguno.</div>
+                    <div><b>Gemini Pro</b> — para razonar de verdad. Tarda más y gasta más ({'~US$0,006'} por consulta).</div>
+                    <div style={{ color: "#8899BB", fontWeight: 700, marginTop: 6 }}>🔑 Sin key de Google</div>
+                    <div>Haiku, Sonnet y los GPT usan sus propias keys. Claude además <b>sí busca en internet</b>.</div>
+                    <div style={{ marginTop: 7, paddingTop: 6, borderTop: "1px solid #1A2744", color: "#8899BB" }}>
+                      Todos leen los <b>links que les pegues</b> (aunque no busquen solos) y las fotos de etiquetas.
+                      Con la key gratis, Google usa lo que mandás para entrenar; con crédito, no.
+                    </div>
+                  </div>
+                </details>
                 <div style={{ fontSize: 10, color: "#00E5A0", fontWeight: 700, marginBottom: 4 }}>🆓 API key de Google AI Studio (para los Gemini · GRATIS)</div>
                 <input type="password" value={geminiKey} onChange={e => setGeminiKey(e.target.value)} placeholder="AIza..." style={{ width: "100%", boxSizing: "border-box" }} />
                 <div style={{ fontSize: 10, color: "#8899BB", marginTop: 4, lineHeight: 1.5 }}>

@@ -62,6 +62,46 @@ colgados 15 min por `curl` sin `--max-time`, que sí mandaron mail).
 **Corolario general:** una racha de verdes no es evidencia de que algo funcione — es evidencia de que
 **alguna** rama del código termina en éxito. Preguntar *"¿qué rama corrió?"*, no *"¿pasó?"*.
 
+## Modelos del chat — medido contra la API el 2026-08-08
+
+Nueve modelos, agrupados en el selector por **qué key necesitan** (`GRUPOS` + campo `grupo`).
+
+| Grupo | Modelo | Medido |
+|---|---|---|
+| 🆓 key gratis | `gemini-3.5-flash-lite` | **~3 s, constante.** Es el default y el que conviene |
+| 🆓 key gratis | `gemini-3.6-flash` | **errático: 4 s y 76 s el mismo pedido** |
+| 💳 con crédito | `gemini-3.5-flash-lite-p` | el mismo Lite, sin tope diario |
+| 💳 con crédito | `gemini-3.6-flash-web` | **el único que busca en Google** y cita fuentes |
+| 💳 con crédito | `gemini-pro-latest` | el potente. US$0,006/consulta |
+| 🔑 sin key de Google | Haiku · Sonnet · GPT-4o mini · GPT-4o | keys propias; Claude sí busca |
+
+**Lo que hay que saber para no repetir el diagnóstico:**
+
+- **La búsqueda de Google NO existe en el tier gratuito.** Verificado a fondo: 429 (cuota 0) en
+  los 7 modelos disponibles, con los dos nombres de la herramienta (`googleSearch` y
+  `googleSearchRetrieval`), en `v1beta` y `v1alpha`, y con el permiso `toolConfig` puesto. Los 2.5
+  —que según la doc sí la tenían— devuelven 404 *"no longer available to new users"*. Con la key de
+  crédito funciona a la primera.
+- **`urlContext` SÍ entra en el tier gratuito:** no busca, pero abre cualquier link que le pases.
+  Es el reemplazo práctico de la búsqueda.
+- **Para combinar herramientas nativas de Google con las nuestras** hace falta
+  `toolConfig.includeServerSideToolInvocations: true`. Sin eso, HTTP 400. No estaba en la doc.
+- **Gemini 3 firma sus llamadas** con un `thoughtSignature` dentro del `functionCall`: hay que
+  reenviar las `parts` del modelo **tal cual vinieron** o responde 400. Por eso el adaptador hace
+  `contents.push({role:'model', parts})` sin tocar nada.
+- **El "pensamiento" se descuenta de `maxOutputTokens`.** Pensaba 552 tokens para responder 77, y con
+  el prompt grande de la app se quedaba sin lugar y **cortaba la respuesta a la mitad**. Fix:
+  `maxOutputTokens: 8192` + `thinkingLevel: 'minimal'` en los marcados `rapido`. Ojo: `'low'` todavía
+  piensa (190 tokens) y `thinkingBudget: 0` da 400 — **el que apaga de verdad es `'minimal'`**.
+- **Timeout de 30 s con un reintento**, porque el Flash gratis se cuelga y la app quedaba
+  "pensando…" para siempre.
+- Las funciones **sin parámetros** van sin el campo `parameters` (un `properties` vacío da 400).
+- Las dos keys viven solo en `localStorage` (`geminiKey` y `geminiKeyPago`) y **no se sincronizan**:
+  hay que cargarlas en cada dispositivo. Con la gratis Google entrena con el contenido; con crédito, no.
+
+Todo esto está resumido para el usuario **dentro de la app**: ⚙️ del chat → *"🧭 ¿Cuál conviene?"*,
+más un aviso naranja que aparece solo al elegir el Flash errático.
+
 ## Datos operativos
 
 - **API key de n8n:** creada 2026-08-07, nombre `GITHUB KEEPALIVE - Mi Dia Nutricional`, **sin
