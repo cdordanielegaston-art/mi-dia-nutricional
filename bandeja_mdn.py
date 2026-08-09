@@ -29,6 +29,8 @@ APP_WEB = "https://cdordanielegaston-art.github.io/mi-dia-nutricional/"
 EDGE = Path(r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe")
 ICONO_PNG = AQUI / "hot-pot-192.png"
 ICONO_ICO = Path(r"D:\Datos Gaston\Desktop\Claude Code\hot-pot.ico")
+ICON_HELPER = AQUI / "Apply-MdnTaskbarIcon.ps1"
+SILENT_LAUNCHER = Path(r"D:\Datos Gaston\Desktop\Explorer con iconos\Native\EcdSilentLauncher.exe")
 MUTEX = "Global\\MiDiaNutricional_Bandeja_ECD"
 CREATE_NO_WINDOW = 0x08000000
 
@@ -57,6 +59,21 @@ def instancia_unica():
 def abrir(destino):
     """Abre la app en Edge, en ventana propia (modo --app: sin barra de direcciones)."""
     try:
+        if SILENT_LAUNCHER.exists() and ICON_HELPER.exists():
+            subprocess.Popen(
+                [
+                    str(SILENT_LAUNCHER),
+                    "ps1",
+                    str(ICON_HELPER),
+                    "-Url",
+                    str(destino),
+                    "-WaitSeconds",
+                    "12",
+                ],
+                creationflags=CREATE_NO_WINDOW,
+            )
+            log(f"abierta con identidad visual -> {destino}")
+            return
         if EDGE.exists():
             subprocess.Popen([str(EDGE), f"--app={destino}"], creationflags=CREATE_NO_WINDOW)
         else:
