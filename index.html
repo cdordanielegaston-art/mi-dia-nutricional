@@ -79,7 +79,7 @@ const DIA_TIPICO_TEXTO = `DIA TIPICO del usuario (su base habitual):
 - Extras del dia: 2 frutas.
 Estructura: base fija = proteina magra alta; acompanamiento = energetico moderado; volumen = hortalizas; grasa = 1 cdta oliva; bebida = te verde.`;
 const SYNC_URL = 'https://ecddaniele.app.n8n.cloud/webhook/mdn-sync';
-const APP_VERSION = 'v39';
+const APP_VERSION = 'v40';
 const SYNC_CODE_STORAGE = 'miDiaNutricional_syncCode';
 const AUTOSYNC_STORAGE = 'miDiaNutricional_autoSync';
 const TIPICO_CUSTOM_STORAGE = 'miDiaNutricional_diaTipicoCustom';
@@ -166,6 +166,36 @@ const CHAT_TOOLS = [
 // Herramientas que trabajan SOBRE el catalogo: mientras el modelo use alguna de
 // estas, hay que seguir mandandole el catalogo completo (ver runGemini).
 const TOOLS_CATALOGO = ['seleccionar_opcion', 'limpiar_dia', 'cargar_dia_tipico'];
+
+// Herramientas que solo EJECUTAN una accion: una vez que corrieron, ya sabemos todo
+// lo que hay que decir. No hace falta volver a preguntarle al modelo "y ahora que le
+// contesto", que es un viaje entero a Google (la mitad del tiempo de espera).
+// ver_dia queda afuera a proposito: ahi el modelo tiene que interpretar los numeros.
+const TOOLS_ACCION = ['agregar_comida_libre', 'seleccionar_opcion', 'cargar_dia_tipico',
+  'poner_gasto', 'limpiar_dia', 'quitar_comida_libre', 'guardar_dia', 'recordar', 'olvidar'];
+
+// Arma la confirmacion en la app, sin gastar otra llamada. Devuelve null si alguna
+// herramienta fallo o no sabemos resumirla: ahi si conviene que conteste el modelo.
+const confirmacionLocal = (calls, resultados) => {
+  const frases = [];
+  for (let i = 0; i < calls.length; i++) {
+    const n = calls[i].name, a = calls[i].args || {}, r = resultados[i] || {};
+    if (r.error) return null;
+    if (TOOLS_ACCION.indexOf(n) === -1) return null;
+    if (n === 'agregar_comida_libre') frases.push('✓ ' + (a.descripcion || 'comida') + (a.kcal ? ' · ' + Math.round(a.kcal) + ' kcal' : ''));
+    else if (n === 'seleccionar_opcion') frases.push('✓ ' + (r.puesto_label || a.opcion_id || 'opción') + (r.seccion_label ? ' en ' + r.seccion_label : ''));
+    else if (n === 'cargar_dia_tipico') frases.push('✓ Cargué tu día típico');
+    else if (n === 'poner_gasto') frases.push('✓ Gasto: ' + Math.round(a.kcal || 0) + ' kcal');
+    else if (n === 'limpiar_dia') frases.push('✓ Día en cero');
+    else if (n === 'quitar_comida_libre') frases.push('✓ Saqué ' + (a.descripcion || 'esa comida'));
+    else if (n === 'guardar_dia') frases.push('✓ Día guardado' + (r.kcal ? ' · ' + r.kcal + ' kcal, ' + r.proteina + 'g prot' : ''));
+    else if (n === 'recordar') frases.push('🧠 Anotado: ' + (a.dato || ''));
+    else if (n === 'olvidar') frases.push('🧠 Olvidado');
+    else return null;
+  }
+  const total = resultados.map(r => r && r.kcal_total_dia).filter(x => typeof x === 'number').pop();
+  return frases.join('\n') + (total ? '\n\nTotal del día: ' + Math.round(total) + ' kcal' : '');
+};
 const MEAL_HORARIOS_DEFAULT ={ desayuno: 8, media_manana: 10.5, almuerzo: 13, merienda: 17.5, cena: 21, extras: 17.5, add_almuerzo: 13, add_cena: 21, leche: 8, huevos_dia: 13 };
 const COMIDAS_PRINCIPALES = [["desayuno","☀️ Desayuno"],["media_manana","🥜 Media mañana"],["almuerzo","🍗 Almuerzo"],["merienda","🫖 Merienda"],["cena","🌙 Cena"]];
 const fmtHora = (dec) => { const hh = Math.floor(dec); const mm = Math.round((dec - hh) * 60); return String(hh).padStart(2,"0") + ":" + String(mm).padStart(2,"0"); };
@@ -956,6 +986,7 @@ function App() {
   const [chatMsgs, setChatMsgs] = useState([]);
   const [chatInput, setChatInput] = useState("");
   const [chatArriba, setChatArriba] = useState(false);   // el mismo asistente, arriba de todo
+  const [segEspera, setSegEspera] = useState(0);         // cronometro en vivo mientras piensa
   const [chatBusy, setChatBusy] = useState(false);
   const [showChat, setShowChat] = useState(false);
   const [showChatCfg, setShowChatCfg] = useState(false);
@@ -972,6 +1003,13 @@ function App() {
   useEffect(() => { try { localStorage.setItem(ANTHROPIC_KEY_STORAGE, anthropicKey); } catch(e){} }, [anthropicKey]);
   useEffect(() => { try { localStorage.setItem(GEMINI_KEY_STORAGE, geminiKey); } catch(e){} }, [geminiKey]);
   useEffect(() => { try { localStorage.setItem(GEMINI_KEY_PAGO_STORAGE, geminiKeyPago); } catch(e){} }, [geminiKeyPago]);
+  // Cronometro en vivo mientras espera: un "pensando..." mudo no deja saber si se colgo
+  useEffect(() => {
+    if (!chatBusy) { setSegEspera(0); return; }
+    const t0 = Date.now();
+    const id = setInterval(() => setSegEspera(Math.round((Date.now() - t0) / 1000)), 500);
+    return () => clearInterval(id);
+  }, [chatBusy]);
   // El modelo elegido YA NO se recuerda entre sesiones: la app arranca siempre en
   // MODELO_INICIAL. Se sigue guardando solo para poder mirarlo si algo falla.
   useEffect(() => { try { localStorage.setItem(CHAT_MODEL_STORAGE, chatModel); } catch(e){} }, [chatModel]);
@@ -1006,7 +1044,16 @@ function App() {
       if (name === 'seleccionar_opcion') {
         let ok = false; Object.values(MEALS).forEach(meal => meal.sections.forEach(sec => { if (sec.key === args.seccion_key && sec.options.find(o => o.id === args.opcion_id)) ok = true; }));
         if (!ok) return { error: 'seccion u opcion invalida: ' + args.seccion_key + ' / ' + args.opcion_id };
-        update(args.seccion_key, args.opcion_id); return { ok: true, seccion: args.seccion_key, opcion: args.opcion_id };
+        update(args.seccion_key, args.opcion_id);
+        // devuelvo tambien los nombres lindos, para poder confirmarte sin volver a Google
+        let etiqueta = args.opcion_id, donde = '';
+        Object.values(MEALS).forEach(meal => meal.sections.forEach(sec => {
+          if (sec.key === args.seccion_key) {
+            const o = sec.options.find(x => x.id === args.opcion_id);
+            if (o) { etiqueta = o.label; donde = meal.label + ' · ' + sec.label.replace(/\s*\(.*?\)/g, ''); }
+          }
+        }));
+        return { ok: true, seccion: args.seccion_key, opcion: args.opcion_id, puesto_label: etiqueta, seccion_label: donde };
       }
       if (name === 'limpiar_dia') { resetAll(); return { ok: true, mensaje: 'Dia puesto en cero (chips en nada y sin comidas libres)' }; }
       if (name === 'quitar_comida_libre') {
@@ -1173,14 +1220,19 @@ function App() {
       if ((CHAT_MODELS.find(m => m.id === chatModel) || {}).rapido) gc.thinkingConfig = { thinkingLevel: 'minimal' };
       const cuerpo = { systemInstruction: { parts: [{ text: necesitaCatalogo ? chatSystemPrompt() : chatSystemPromptCorto() }] }, contents, tools, generationConfig: gc };
       if (conBusqueda || conUrl) cuerpo.toolConfig = { includeServerSideToolInvocations: true };
-      // El servidor gratuito de Google a veces se cuelga: medido el mismo pedido en
-      // 4,1 s y en 76,4 s. Sin un limite, la app se queda "pensando…" para siempre y
-      // parece rota. Corto a los 30 s y reintento una vez; el segundo suele salir al
-      // toque porque cae en otra maquina.
+      // Google a veces se cuelga (medido: el mismo pedido en 4,1 s y en 76,4 s). Una
+      // respuesta normal tarda 1-3 s, asi que a los 12 s ya no vale la pena esperar:
+      // conviene cortar y volver a pedir, que suele caer en otra maquina y sale al toque.
+      //
+      // 2026-08-08 — ANTES ESTO ERA PEOR QUE EL PROBLEMA: cortaba a los 30 s y
+      // reintentaba una vez => 60 s de "pensando…" garantizados cada vez que se trababa,
+      // y con dos vueltas de herramientas, DOS MINUTOS. Gaston lo sufrio. Ahora son
+      // 12+12 = 24 s en el peor caso, y con el atajo de confirmacion local casi siempre
+      // hay una sola vuelta.
       let resp;
       for (let intento = 0; ; intento++) {
         const ctrl = new AbortController();
-        const reloj = setTimeout(() => ctrl.abort(), 30000);
+        const reloj = setTimeout(() => ctrl.abort(), 12000);
         try {
           resp = await fetch(url, {
             method: 'POST',
@@ -1192,7 +1244,7 @@ function App() {
           break;
         } catch (err) {
           clearTimeout(reloj);
-          if (intento >= 1) throw new Error('Gemini no contestó en 30 segundos (dos veces). El modelo gratis a veces se satura — probá con "Gemini rápido", que es el más estable.');
+          if (intento >= 1) throw new Error('Gemini no contestó en 12 segundos, dos veces seguidas. Suele ser saturación del lado de Google: probá de nuevo en un rato, o cambiá de modelo en el selector.');
         }
       }
       if (!resp.ok) {
@@ -1233,7 +1285,12 @@ function App() {
         if (busquedaRechazada && !leidas.length) nota += '\n\n⚠️ _Sin buscar en internet: Google no habilita la búsqueda con esta API key (haría falta facturación en el proyecto). Esto lo contestó de memoria. Para buscar de verdad, elegí Haiku o Sonnet — o pegale el link y lo lee._';
         return txt + nota;
       }
-      contents.push({ role: 'user', parts: calls.map(fc => ({ functionResponse: { name: fc.name, response: { resultado: ejecutarTool(fc.name, fc.args || {}) } } })) });
+      const resultados = calls.map(fc => ejecutarTool(fc.name, fc.args || {}));
+      // ATAJO: si solo fueron acciones y salieron bien, ya esta hecho y confirmado.
+      // Contestar desde la app ahorra un viaje entero a Google — la mitad de la espera.
+      const rapida = confirmacionLocal(calls, resultados);
+      if (rapida) return rapida;
+      contents.push({ role: 'user', parts: calls.map((fc, k) => ({ functionResponse: { name: fc.name, response: { resultado: resultados[k] } } })) });
       // Si estuvo tocando el catalogo, en la proxima vuelta se lo mando de nuevo:
       // sin el, elige agregar_comida_libre para cosas que SI estan en el catalogo.
       necesitaCatalogo = calls.some(fc => TOOLS_CATALOGO.indexOf(fc.name) !== -1);
@@ -1265,12 +1322,13 @@ function App() {
     const base = [...chatMsgs, { role: 'user', text: txt, imgs }];
     setChatMsgs(base);
     setChatBusy(true);
+    const arranco = Date.now();   // para mostrar cuanto tardo de verdad
     try {
       const reply = prov === 'anthropic' ? await runAnthropic(base, key.trim())
         : prov === 'google' ? await runGemini(base, key.trim())
         : await runOpenAI(base, key.trim());
-      setChatMsgs(m => [...m, { role: 'assistant', text: reply }]);
-    } catch(e) { console.error('[chat]', e); setChatMsgs(m => [...m, { role: 'assistant', text: '⚠️ ' + (e.message || e) }]); }
+      setChatMsgs(m => [...m, { role: 'assistant', text: reply, seg: (Date.now() - arranco) / 1000 }]);
+    } catch(e) { console.error('[chat]', e); setChatMsgs(m => [...m, { role: 'assistant', text: '⚠️ ' + (e.message || e), seg: (Date.now() - arranco) / 1000 }]); }
     finally { setChatBusy(false); }
   };
 
@@ -1436,7 +1494,7 @@ function App() {
           <button className="btn" onClick={() => setChatArriba(true)} title="Escribirle al asistente"
             style={{ background: "linear-gradient(135deg,#6C5CE7,#4834d4)", color: "#fff", border: "none", borderRadius: 22,
                      padding: "9px 15px", fontSize: 13, fontWeight: 800, boxShadow: "0 4px 14px #0009", cursor: "pointer" }}>
-            💬 {chatBusy ? "pensando…" : "Escribile"}
+            💬 {chatBusy ? ("pensando… " + segEspera + "s") : "Escribile"}
           </button>
         )}
         {chatArriba && (
@@ -1459,7 +1517,7 @@ function App() {
                                   background: m.role === 'user' ? "#6C5CE7" : "#1A2744", color: "#fff" }}>{m.text}</div>
                   </div>
                 ))}
-                {chatBusy && <div style={{ fontSize: 11, color: "#8899BB", fontStyle: "italic" }}>pensando…</div>}
+                {chatBusy && <div style={{ fontSize: 11, color: segEspera > 10 ? "#FF8C42" : "#8899BB", fontStyle: "italic" }}>pensando… {segEspera}s{segEspera > 10 ? " (se está colgando)" : ""}</div>}
               </div>
             )}
             <div style={{ display: "flex", gap: 6, padding: 8 }}>
@@ -2216,10 +2274,16 @@ function App() {
                       </div>
                     )}
                     {m.text}
+                    {/* cuanto tardo de verdad: para no discutir "me parece que va lento" */}
+                    {typeof m.seg === 'number' && (
+                      <div style={{ fontSize: 9, marginTop: 4, color: m.seg > 10 ? "#FF8C42" : "#8899BB" }}>
+                        {m.seg.toFixed(1)} s{m.seg > 10 ? " · lento, no es normal" : ""}
+                      </div>
+                    )}
                   </div>
                 </div>
               ))}
-              {chatBusy && <div style={{ fontSize: 12, color: "#8899BB", fontStyle: "italic" }}>pensando…</div>}
+              {chatBusy && <div style={{ fontSize: 12, color: segEspera > 10 ? "#FF8C42" : "#8899BB", fontStyle: "italic" }}>pensando… {segEspera}s{segEspera > 10 ? " · se está colgando, corta solo a los 12 s" : ""}</div>}
               <div ref={chatEndRef} />
             </div>
             {chatErr && <div style={{ fontSize: 12, color: "#FF6B6B", marginBottom: 8, padding: "6px 8px", background: "#FF6B6B11", borderRadius: 6 }}>{chatErr}</div>}
