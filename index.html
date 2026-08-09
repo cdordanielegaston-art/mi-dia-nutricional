@@ -79,7 +79,7 @@ const DIA_TIPICO_TEXTO = `DIA TIPICO del usuario (su base habitual):
 - Extras del dia: 2 frutas.
 Estructura: base fija = proteina magra alta; acompanamiento = energetico moderado; volumen = hortalizas; grasa = 1 cdta oliva; bebida = te verde.`;
 const SYNC_URL = 'https://ecddaniele.app.n8n.cloud/webhook/mdn-sync';
-const APP_VERSION = 'v33';
+const APP_VERSION = 'v34';
 const SYNC_CODE_STORAGE = 'miDiaNutricional_syncCode';
 const AUTOSYNC_STORAGE = 'miDiaNutricional_autoSync';
 const TIPICO_CUSTOM_STORAGE = 'miDiaNutricional_diaTipicoCustom';
@@ -130,16 +130,24 @@ const GEMINI_ALIAS = {
 // Por eso los Flash van con pensamiento corto: para cargar comida no hace falta
 // que razone, y encima el pensamiento se comia el presupuesto y cortaba la
 // respuesta a mitad. El Pro SI piensa (para eso esta).
+// Agrupados por LA KEY QUE NECESITAN, que es lo que de verdad los diferencia:
+//   1. la key gratis de Google       2. la key de Google con credito
+//   3. ninguna key de Google (Claude y GPT, con las suyas de siempre)
+const GRUPOS = [
+  { id: 'g_free',  label: '🆓 Con la key GRATIS de Google' },
+  { id: 'g_pago',  label: '💳 Con la key de Google CON CRÉDITO' },
+  { id: 'sin_g',   label: '🔑 Sin key de Google (Claude · GPT)' }
+];
 const CHAT_MODELS = [
-  { id: 'gemini-3.5-flash-lite',   label: '🆓 Gemini rápido · instantáneo',       prov: 'google',                rapido: true },
-  { id: 'gemini-3.6-flash',        label: '🆓 Gemini Flash · equilibrado',        prov: 'google',                rapido: true },
-  { id: 'gemini-3.5-flash-lite-p', label: '💳 Gemini rápido · sin tope diario',   prov: 'google', pago: true,    rapido: true },
-  { id: 'gemini-3.6-flash-web',    label: '💳 Gemini + internet · busca y cita',  prov: 'google', pago: true,    rapido: true },
-  { id: 'gemini-pro-latest',       label: '💳 Gemini Pro · el más potente',       prov: 'google', pago: true },
-  { id: 'claude-haiku-4-5-20251001', label: '💳 Haiku · rápido',                  prov: 'anthropic' },
-  { id: 'claude-sonnet-4-6',       label: '💳 Sonnet · el más capaz',             prov: 'anthropic' },
-  { id: 'gpt-4o-mini',             label: '💳 GPT-4o mini · rápido y barato',     prov: 'openai' },
-  { id: 'gpt-4o',                  label: '💳 GPT-4o · potente',                  prov: 'openai' }
+  { id: 'gemini-3.5-flash-lite',   label: 'Gemini rápido · instantáneo (~3 s)',  grupo: 'g_free', prov: 'google',                rapido: true },
+  { id: 'gemini-3.6-flash',        label: 'Gemini Flash · equilibrado',          grupo: 'g_free', prov: 'google',                rapido: true },
+  { id: 'gemini-3.5-flash-lite-p', label: 'Gemini rápido · sin tope diario',     grupo: 'g_pago', prov: 'google', pago: true,    rapido: true },
+  { id: 'gemini-3.6-flash-web',    label: 'Gemini + internet · busca y cita',    grupo: 'g_pago', prov: 'google', pago: true,    rapido: true },
+  { id: 'gemini-pro-latest',       label: 'Gemini Pro · el más potente',         grupo: 'g_pago', prov: 'google', pago: true },
+  { id: 'claude-haiku-4-5-20251001', label: 'Haiku · rápido',                    grupo: 'sin_g',  prov: 'anthropic' },
+  { id: 'claude-sonnet-4-6',       label: 'Sonnet · el más capaz',               grupo: 'sin_g',  prov: 'anthropic' },
+  { id: 'gpt-4o-mini',             label: 'GPT-4o mini · rápido y barato',       grupo: 'sin_g',  prov: 'openai' },
+  { id: 'gpt-4o',                  label: 'GPT-4o · potente',                    grupo: 'sin_g',  prov: 'openai' }
 ];
 const CHAT_TOOLS = [
   { name: 'agregar_comida_libre', description: 'Agrega una comida que NO esta en el catalogo (pizza, alfajor, asado, fiambre, etc.) al dia de hoy. Si el usuario no da los macros, ESTIMALOS vos con tu conocimiento nutricional.', schema: { type: 'object', properties: { descripcion: { type: 'string', description: 'que comio, ej: 1 alfajor triple' }, kcal: { type: 'number', description: 'calorias totales' }, proteina: { type: 'number', description: 'gramos de proteina' }, carbohidratos: { type: 'number', description: 'gramos de carbohidratos' }, grasa: { type: 'number', description: 'gramos de grasa' } }, required: ['descripcion', 'kcal', 'proteina', 'carbohidratos', 'grasa'] } },
@@ -2082,7 +2090,11 @@ function App() {
             )}
             <div style={{ display: "flex", gap: 6, alignItems: "center", marginBottom: 8 }}>
               <select value={chatModel} onChange={e => setChatModel(e.target.value)} style={{ flex: 1, background: "#0B1120", color: "#fff", border: "1.5px solid #1A2744", borderRadius: 6, padding: "6px 8px", fontSize: 12 }}>
-                {CHAT_MODELS.map(m => <option key={m.id} value={m.id}>{m.label}</option>)}
+                {GRUPOS.map(g => (
+                  <optgroup key={g.id} label={g.label}>
+                    {CHAT_MODELS.filter(m => m.grupo === g.id).map(m => <option key={m.id} value={m.id}>{m.label}</option>)}
+                  </optgroup>
+                ))}
               </select>
               <button className="btn" onClick={() => setShowChatCfg(!showChatCfg)} title="API key" style={{ background: "transparent", border: "1px solid #1A2744", borderRadius: 6, color: (anthropicKey || geminiKey || geminiKeyPago || apiKey) ? "#00E5A0" : "#FF8C42", padding: "5px 9px", fontSize: 13 }}>⚙️</button>
               {chatMsgs.length > 0 && <button className="btn" onClick={() => setChatMsgs([])} title="Limpiar chat" style={{ background: "transparent", border: "1px solid #1A2744", borderRadius: 6, color: "#8899BB", padding: "5px 9px", fontSize: 13 }}>🗑</button>}
