@@ -79,7 +79,7 @@ const DIA_TIPICO_TEXTO = `DIA TIPICO del usuario (su base habitual):
 - Extras del dia: 2 frutas.
 Estructura: base fija = proteina magra alta; acompanamiento = energetico moderado; volumen = hortalizas; grasa = 1 cdta oliva; bebida = te verde.`;
 const SYNC_URL = 'https://ecddaniele.app.n8n.cloud/webhook/mdn-sync';
-const APP_VERSION = 'v37';
+const APP_VERSION = 'v38';
 const SYNC_CODE_STORAGE = 'miDiaNutricional_syncCode';
 const AUTOSYNC_STORAGE = 'miDiaNutricional_autoSync';
 const TIPICO_CUSTOM_STORAGE = 'miDiaNutricional_diaTipicoCustom';
@@ -2132,9 +2132,10 @@ function App() {
                     <div style={{ color: "#FF8C42" }}><b>Gemini Flash</b> — ⚠️ <b>errático</b>: el mismo pedido tardó 4 s una vez y <b>76 s</b> la otra. No es tu internet: Google satura el servicio gratuito. <b>Si el chat va lento, es este</b> — pasate al rápido.</div>
                     <div style={{ color: "#FF8C42", fontWeight: 700, marginTop: 6 }}>💳 Con la key de crédito</div>
                     <div style={{ color: "#8899BB", fontStyle: "italic" }}>Ojo: acá <b>no hay nada gratis</b>. Al activar la facturación, Google cobra desde el primer token — el free tier existe solo en la key sin facturar. (Lo único con cuota gratis es la búsqueda: 5.000 por mes.)</div>
-                    <div><b>Gemini rápido (sin tope)</b> — igual de veloz, sin cuota diaria. <b>Es con el que arranca la app.</b> El más barato: ~US$0,001 por consulta, o sea unas 10.000 con 10 dólares.</div>
-                    <div><b>Gemini + internet</b> — el único que busca en Google y te cita la fuente con link. Con la key gratis <b>no existe la búsqueda</b>, ni con este ni con ninguno.</div>
-                    <div><b>Gemini Pro</b> — para razonar de verdad. Tarda más y gasta más ({'~US$0,006'} por consulta).</div>
+                    <div style={{ color: "#8899BB", marginTop: 3 }}>Medido cargando una comida, con el prompt completo de la app:</div>
+                    <div><b>Gemini rápido (sin tope)</b> — 2,5 s · <b>US$0,0031</b> · rinde <b>~3.270 comidas</b> con 10 dólares. <b>Es con el que arranca la app.</b></div>
+                    <div><b>Gemini + internet</b> — 5,6 s · <b>US$0,015</b> · ~660 comidas. El único que busca en Google y cita la fuente. La búsqueda en sí no se cobra hasta las 5.000 del mes. Con la key gratis <b>no existe la búsqueda</b>, ni con este ni con ninguno.</div>
+                    <div><b>Gemini Pro</b> — 13,6 s · <b>US$0,0225</b> · ~440 comidas. Para razonar, no para cargar comida.</div>
                     <div style={{ color: "#8899BB", fontWeight: 700, marginTop: 6 }}>🔑 Sin key de Google</div>
                     <div>Haiku, Sonnet y los GPT usan sus propias keys. Claude además <b>sí busca en internet</b>.</div>
                     <div style={{ marginTop: 7, paddingTop: 6, borderTop: "1px solid #1A2744", color: "#8899BB" }}>
