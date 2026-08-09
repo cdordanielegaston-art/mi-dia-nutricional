@@ -79,7 +79,7 @@ const DIA_TIPICO_TEXTO = `DIA TIPICO del usuario (su base habitual):
 - Extras del dia: 2 frutas.
 Estructura: base fija = proteina magra alta; acompanamiento = energetico moderado; volumen = hortalizas; grasa = 1 cdta oliva; bebida = te verde.`;
 const SYNC_URL = 'https://ecddaniele.app.n8n.cloud/webhook/mdn-sync';
-const APP_VERSION = 'v36';
+const APP_VERSION = 'v37';
 const SYNC_CODE_STORAGE = 'miDiaNutricional_syncCode';
 const AUTOSYNC_STORAGE = 'miDiaNutricional_autoSync';
 const TIPICO_CUSTOM_STORAGE = 'miDiaNutricional_diaTipicoCustom';
@@ -1168,7 +1168,13 @@ function App() {
         // lo que pasa hoy sin facturacion). En los dos casos sigo SIN busqueda en vez de morir.
         if (conBusqueda && (resp.status === 400 || resp.status === 429)) { conBusqueda = false; busquedaRechazada = true; continue; }
         if (conUrl && (resp.status === 400 || resp.status === 429)) { conUrl = false; continue; }
-        if (resp.status === 429) throw new Error('Gemini: llegaste al límite gratuito por hoy. Probá con otro modelo o esperá (se reinicia a medianoche hora del Pacífico).');
+        // Distinto mensaje segun de que key se trate: en la gratis se agota la cuota
+        // del dia (vuelve sola); en la de credito se acaba la PLATA (no vuelve sola).
+        const esPago = (CHAT_MODELS.find(m => m.id === chatModel) || {}).pago;
+        if (resp.status === 429 || resp.status === 403) {
+          if (esPago) throw new Error('Se cortó el modelo con crédito (' + resp.status + '). Puede que se haya agotado el saldo de Google. Mientras tanto, elegí uno del grupo 🆓 (gratis) en el selector de arriba — anda igual de rápido.');
+          throw new Error('Llegaste al límite gratuito de hoy. Se reinicia a la medianoche del Pacífico (unas 5 de la mañana acá). Si querés seguir ahora, usá uno del grupo 💳.');
+        }
         throw new Error('Gemini ' + resp.status + ': ' + t.slice(0, 200));
       }
       const data = await resp.json();
@@ -2125,7 +2131,8 @@ function App() {
                     <div><b>Gemini rápido</b> — ~3 s y siempre igual. <b>Es el que conviene para el día a día</b>: para cargar comida no hace falta más.</div>
                     <div style={{ color: "#FF8C42" }}><b>Gemini Flash</b> — ⚠️ <b>errático</b>: el mismo pedido tardó 4 s una vez y <b>76 s</b> la otra. No es tu internet: Google satura el servicio gratuito. <b>Si el chat va lento, es este</b> — pasate al rápido.</div>
                     <div style={{ color: "#FF8C42", fontWeight: 700, marginTop: 6 }}>💳 Con la key de crédito</div>
-                    <div><b>Gemini rápido (sin tope)</b> — igual de veloz, pero no se queda sin cuota diaria.</div>
+                    <div style={{ color: "#8899BB", fontStyle: "italic" }}>Ojo: acá <b>no hay nada gratis</b>. Al activar la facturación, Google cobra desde el primer token — el free tier existe solo en la key sin facturar. (Lo único con cuota gratis es la búsqueda: 5.000 por mes.)</div>
+                    <div><b>Gemini rápido (sin tope)</b> — igual de veloz, sin cuota diaria. <b>Es con el que arranca la app.</b> El más barato: ~US$0,001 por consulta, o sea unas 10.000 con 10 dólares.</div>
                     <div><b>Gemini + internet</b> — el único que busca en Google y te cita la fuente con link. Con la key gratis <b>no existe la búsqueda</b>, ni con este ni con ninguno.</div>
                     <div><b>Gemini Pro</b> — para razonar de verdad. Tarda más y gasta más ({'~US$0,006'} por consulta).</div>
                     <div style={{ color: "#8899BB", fontWeight: 700, marginTop: 6 }}>🔑 Sin key de Google</div>
