@@ -1,4 +1,4 @@
-const CACHE = 'mdn-v32';
+const CACHE = 'mdn-v33';
 
 // Lo minimo para que la app abra sin internet. Los CDN NO estan aca a proposito:
 // se cachean solos la primera vez que se usan (ver el fetch de abajo).

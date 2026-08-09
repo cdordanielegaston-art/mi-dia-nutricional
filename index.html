@@ -79,7 +79,7 @@ const DIA_TIPICO_TEXTO = `DIA TIPICO del usuario (su base habitual):
 - Extras del dia: 2 frutas.
 Estructura: base fija = proteina magra alta; acompanamiento = energetico moderado; volumen = hortalizas; grasa = 1 cdta oliva; bebida = te verde.`;
 const SYNC_URL = 'https://ecddaniele.app.n8n.cloud/webhook/mdn-sync';
-const APP_VERSION = 'v32';
+const APP_VERSION = 'v33';
 const SYNC_CODE_STORAGE = 'miDiaNutricional_syncCode';
 const AUTOSYNC_STORAGE = 'miDiaNutricional_autoSync';
 const TIPICO_CUSTOM_STORAGE = 'miDiaNutricional_diaTipicoCustom';
@@ -104,6 +104,7 @@ const PRECIOS_DEFAULT = {
   // La busqueda va aparte: 5.000 gratis por mes y despues 14 USD cada 1.000 — no
   // aparece en el contador porque no viene en el conteo de tokens.
   'gemini-3.6-flash-web': { in: 1.50, out: 7.50 },
+  'gemini-3.5-flash-lite-p': { in: 0.30, out: 2.50 },
   'gemini-pro-latest': { in: 2.00, out: 12.00 }
 };
 // La busqueda de Google NO existe en el tier gratuito (probado 2026-08-08: 429 cuota 0 en
@@ -111,17 +112,30 @@ const PRECIOS_DEFAULT = {
 // SI anda con la key que tiene credito cargado: probado, busco "mcdonalds argentina big mac
 // calorias" y cito mcdonalds.com.ar.
 const GEMINI_CON_BUSQUEDA = ['gemini-3.6-flash-web'];
-const GEMINI_ALIAS = { 'gemini-3.6-flash-web': 'gemini-3.6-flash' };  // id propio -> modelo real
+// ids propios de la app -> modelo real de Google (el mismo modelo puede aparecer
+// dos veces en el selector: una con la key gratis y otra con la del credito)
+const GEMINI_ALIAS = {
+  'gemini-3.6-flash-web': 'gemini-3.6-flash',
+  'gemini-3.5-flash-lite-p': 'gemini-3.5-flash-lite'
+};
 // Cada modelo dice QUE HACE (el adjetivo) y CUANTO CUESTA (el simbolo):
 //   🆓 = no gasta nada          💳 = descuenta de un saldo/tarjeta
 // Probado modelo por modelo contra la API el 2026-08-08: los Flash andan con las
 // dos keys de Google; Pro y la busqueda SOLO con la que tiene credito (con la
 // gratis dan 429). gemini-2.5-pro ya no existe para cuentas nuevas.
+// Medido contra la API el 2026-08-08, misma pregunta:
+//   Lite ............................ 0,8 s  (no "piensa": contesta y listo)
+//   Flash con pensamiento corto ..... 3,0 s
+//   Flash como venia (por defecto) .. 5,7 s  <- pensaba 552 tokens para decir 77
+// Por eso los Flash van con pensamiento corto: para cargar comida no hace falta
+// que razone, y encima el pensamiento se comia el presupuesto y cortaba la
+// respuesta a mitad. El Pro SI piensa (para eso esta).
 const CHAT_MODELS = [
-  { id: 'gemini-3.6-flash',        label: '🆓 Gemini Flash · equilibrado',        prov: 'google' },
-  { id: 'gemini-3.5-flash-lite',   label: '🆓 Gemini Lite · el más rápido',       prov: 'google' },
-  { id: 'gemini-pro-latest',       label: '💳 Gemini Pro · el más potente',       prov: 'google',    pago: true },
-  { id: 'gemini-3.6-flash-web',    label: '💳 Gemini + internet · busca y cita',  prov: 'google',    pago: true },
+  { id: 'gemini-3.5-flash-lite',   label: '🆓 Gemini rápido · instantáneo',       prov: 'google',                rapido: true },
+  { id: 'gemini-3.6-flash',        label: '🆓 Gemini Flash · equilibrado',        prov: 'google',                rapido: true },
+  { id: 'gemini-3.5-flash-lite-p', label: '💳 Gemini rápido · sin tope diario',   prov: 'google', pago: true,    rapido: true },
+  { id: 'gemini-3.6-flash-web',    label: '💳 Gemini + internet · busca y cita',  prov: 'google', pago: true,    rapido: true },
+  { id: 'gemini-pro-latest',       label: '💳 Gemini Pro · el más potente',       prov: 'google', pago: true },
   { id: 'claude-haiku-4-5-20251001', label: '💳 Haiku · rápido',                  prov: 'anthropic' },
   { id: 'claude-sonnet-4-6',       label: '💳 Sonnet · el más capaz',             prov: 'anthropic' },
   { id: 'gpt-4o-mini',             label: '💳 GPT-4o mini · rápido y barato',     prov: 'openai' },
@@ -921,7 +935,9 @@ function App() {
   const [anthropicKey, setAnthropicKey] = useState(() => { try { return localStorage.getItem(ANTHROPIC_KEY_STORAGE) || ""; } catch(e){ return ""; } });
   const [geminiKey, setGeminiKey] = useState(() => { try { return localStorage.getItem(GEMINI_KEY_STORAGE) || ""; } catch(e){ return ""; } });
   const [geminiKeyPago, setGeminiKeyPago] = useState(() => { try { return localStorage.getItem(GEMINI_KEY_PAGO_STORAGE) || ""; } catch(e){ return ""; } });
-  const [chatModel, setChatModel] = useState(() => { try { return localStorage.getItem(CHAT_MODEL_STORAGE) || 'claude-haiku-4-5-20251001'; } catch(e){ return 'claude-haiku-4-5-20251001'; } });
+  // Por defecto el mas rapido Y gratis. Antes venia en Haiku, que necesita la key
+  // paga de Anthropic: si no la tenias cargada, el chat no respondia y parecia roto.
+  const [chatModel, setChatModel] = useState(() => { try { return localStorage.getItem(CHAT_MODEL_STORAGE) || 'gemini-3.5-flash-lite'; } catch(e){ return 'gemini-3.5-flash-lite'; } });
   const [chatMsgs, setChatMsgs] = useState([]);
   const [chatInput, setChatInput] = useState("");
   const [chatArriba, setChatArriba] = useState(false);   // el mismo asistente, arriba de todo
@@ -1100,13 +1116,38 @@ function App() {
       if (conUrl) tools.push({ urlContext: {} });
       // Para usar herramientas NATIVAS de Google (urlContext, googleSearch) JUNTO con las
       // nuestras hay que pedir permiso explicito, si no responde 400. Probado 2026-08-08.
-      const cuerpo = { systemInstruction: { parts: [{ text: chatSystemPrompt() }] }, contents, tools, generationConfig: { maxOutputTokens: 2048 } };
+      // maxOutputTokens 8192 (antes 2048): el "pensamiento" de Gemini 3 se descuenta
+      // de ACA, asi que con el prompt grande de la app se quedaba sin lugar y cortaba
+      // la respuesta por la mitad. Y thinkingLevel 'low' en los rapidos: medido, pasa
+      // de 5,7 s a 3,0 s, y el Lite ni piensa (0,8 s). El Pro queda pensando normal.
+      const gc = { maxOutputTokens: 8192 };
+      // 'minimal' apaga el pensamiento de verdad (medido: 0 tokens). Con 'low' seguia
+      // pensando 190 y tardando. 'thinkingBudget: 0' no lo acepta (HTTP 400).
+      if ((CHAT_MODELS.find(m => m.id === chatModel) || {}).rapido) gc.thinkingConfig = { thinkingLevel: 'minimal' };
+      const cuerpo = { systemInstruction: { parts: [{ text: chatSystemPrompt() }] }, contents, tools, generationConfig: gc };
       if (conBusqueda || conUrl) cuerpo.toolConfig = { includeServerSideToolInvocations: true };
-      const resp = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key },
-        body: JSON.stringify(cuerpo)
-      });
+      // El servidor gratuito de Google a veces se cuelga: medido el mismo pedido en
+      // 4,1 s y en 76,4 s. Sin un limite, la app se queda "pensando…" para siempre y
+      // parece rota. Corto a los 30 s y reintento una vez; el segundo suele salir al
+      // toque porque cae en otra maquina.
+      let resp;
+      for (let intento = 0; ; intento++) {
+        const ctrl = new AbortController();
+        const reloj = setTimeout(() => ctrl.abort(), 30000);
+        try {
+          resp = await fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key },
+            body: JSON.stringify(cuerpo),
+            signal: ctrl.signal
+          });
+          clearTimeout(reloj);
+          break;
+        } catch (err) {
+          clearTimeout(reloj);
+          if (intento >= 1) throw new Error('Gemini no contestó en 30 segundos (dos veces). El modelo gratis a veces se satura — probá con "Gemini rápido", que es el más estable.');
+        }
+      }
       if (!resp.ok) {
         const t = await resp.text();
         // Google puede rechazar la busqueda por no aceptarla (400) o por cuota 0 (429, que es
