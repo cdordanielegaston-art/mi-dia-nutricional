@@ -79,7 +79,7 @@ const DIA_TIPICO_TEXTO = `DIA TIPICO del usuario (su base habitual):
 - Extras del dia: 2 frutas.
 Estructura: base fija = proteina magra alta; acompanamiento = energetico moderado; volumen = hortalizas; grasa = 1 cdta oliva; bebida = te verde.`;
 const SYNC_URL = 'https://ecddaniele.app.n8n.cloud/webhook/mdn-sync';
-const APP_VERSION = 'v40';
+const APP_VERSION = 'v41';
 const SYNC_CODE_STORAGE = 'miDiaNutricional_syncCode';
 const AUTOSYNC_STORAGE = 'miDiaNutricional_autoSync';
 const TIPICO_CUSTOM_STORAGE = 'miDiaNutricional_diaTipicoCustom';
@@ -154,7 +154,8 @@ const CHAT_MODELS = [
 const CHAT_TOOLS = [
   { name: 'agregar_comida_libre', description: 'Agrega una comida que NO esta en el catalogo (pizza, alfajor, asado, fiambre, etc.) al dia de hoy. Si el usuario no da los macros, ESTIMALOS vos con tu conocimiento nutricional.', schema: { type: 'object', properties: { descripcion: { type: 'string', description: 'que comio, ej: 1 alfajor triple' }, kcal: { type: 'number', description: 'calorias totales' }, proteina: { type: 'number', description: 'gramos de proteina' }, carbohidratos: { type: 'number', description: 'gramos de carbohidratos' }, grasa: { type: 'number', description: 'gramos de grasa' } }, required: ['descripcion', 'kcal', 'proteina', 'carbohidratos', 'grasa'] } },
   { name: 'ver_dia', description: 'Devuelve el resumen del dia actual: macros totales, gasto, deficit, proteina g/kg y como va a esta hora.', schema: { type: 'object', properties: {}, required: [] } },
-  { name: 'cargar_dia_tipico', description: 'Carga el dia tipico del usuario (sus comidas habituales) en la app.', schema: { type: 'object', properties: {}, required: [] } },
+  { name: 'cargar_dia_tipico', description: 'Carga el dia tipico COMPLETO (las 5 comidas de golpe). NO la uses si el usuario nombra una comida sola: para eso esta cargar_comida_tipica.', schema: { type: 'object', properties: {}, required: [] } },
+  { name: 'cargar_comida_tipica', description: 'Carga SOLO UNA comida del dia tipico, sin tocar el resto del dia. Es la correcta cuando el usuario dice "desayuno tipico", "el almuerzo de siempre", "la cena habitual", etc.', schema: { type: 'object', properties: { comida: { type: 'string', enum: ['desayuno', 'media_manana', 'almuerzo', 'merienda', 'cena'], description: 'que comida cargar' } }, required: ['comida'] } },
   { name: 'poner_gasto', description: 'Setea el gasto calorico del dia (de WHOOP) en kcal.', schema: { type: 'object', properties: { kcal: { type: 'number', description: 'gasto calorico en kcal' } }, required: ['kcal'] } },
   { name: 'seleccionar_opcion', description: 'Selecciona una opcion del CATALOGO en una seccion, como tocar un chip (ej: poner Pechuga 100g en el desayuno). Usa seccion_key y opcion_id EXACTOS del catalogo. Para dejar una seccion en nada, usa el id de "sin/nada" de esa seccion.', schema: { type: 'object', properties: { seccion_key: { type: 'string', description: 'key de la seccion, ej des_prot, mm_snack, alm_energ' }, opcion_id: { type: 'string', description: 'id de la opcion, ej pech100, almendras_fruta' } }, required: ['seccion_key', 'opcion_id'] } },
   { name: 'limpiar_dia', description: 'Pone TODAS las secciones del dia en nada/0 y borra las comidas libres. Para empezar el dia de cero antes de cargar solo algunas comidas.', schema: { type: 'object', properties: {}, required: [] } },
@@ -171,8 +172,22 @@ const TOOLS_CATALOGO = ['seleccionar_opcion', 'limpiar_dia', 'cargar_dia_tipico'
 // lo que hay que decir. No hace falta volver a preguntarle al modelo "y ahora que le
 // contesto", que es un viaje entero a Google (la mitad del tiempo de espera).
 // ver_dia queda afuera a proposito: ahi el modelo tiene que interpretar los numeros.
+//
+// 2026-08-08 — limpiar_dia NO va aca, aunque sea una accion. Casi siempre es el PRIMER
+// paso de algo ("limpio y despues cargo el desayuno"), y si cortamos el turno ahi el
+// modelo nunca llega a hacer la segunda parte. Le paso a Gaston: pidio corregir el dia
+// y la app contestaba "✓ Día en cero" y se quedaba muda, dos veces seguidas.
 const TOOLS_ACCION = ['agregar_comida_libre', 'seleccionar_opcion', 'cargar_dia_tipico',
-  'poner_gasto', 'limpiar_dia', 'quitar_comida_libre', 'guardar_dia', 'recordar', 'olvidar'];
+  'cargar_comida_tipica', 'poner_gasto', 'quitar_comida_libre', 'guardar_dia', 'recordar', 'olvidar'];
+
+// Que secciones del dia tipico corresponden a cada comida (para cargar SOLO una).
+const SECCIONES_POR_COMIDA = {
+  desayuno:     ['des_'],
+  media_manana: ['mm_'],
+  almuerzo:     ['alm_', 'add_batata_a', 'add_huevos1_a', 'add_huevos2_a'],
+  merienda:     ['mer_'],
+  cena:         ['cena_', 'add_batata_c', 'add_huevos1_c', 'add_huevos2_c']
+};
 
 // Arma la confirmacion en la app, sin gastar otra llamada. Devuelve null si alguna
 // herramienta fallo o no sabemos resumirla: ahi si conviene que conteste el modelo.
@@ -184,7 +199,8 @@ const confirmacionLocal = (calls, resultados) => {
     if (TOOLS_ACCION.indexOf(n) === -1) return null;
     if (n === 'agregar_comida_libre') frases.push('✓ ' + (a.descripcion || 'comida') + (a.kcal ? ' · ' + Math.round(a.kcal) + ' kcal' : ''));
     else if (n === 'seleccionar_opcion') frases.push('✓ ' + (r.puesto_label || a.opcion_id || 'opción') + (r.seccion_label ? ' en ' + r.seccion_label : ''));
-    else if (n === 'cargar_dia_tipico') frases.push('✓ Cargué tu día típico');
+    else if (n === 'cargar_dia_tipico') frases.push('✓ Cargué tu día típico COMPLETO');
+    else if (n === 'cargar_comida_tipica') frases.push('✓ ' + (r.comida || a.comida || 'comida') + ' típico/a' + (r.puestos ? ' (' + r.puestos + ' cosas)' : ''));
     else if (n === 'poner_gasto') frases.push('✓ Gasto: ' + Math.round(a.kcal || 0) + ' kcal');
     else if (n === 'limpiar_dia') frases.push('✓ Día en cero');
     else if (n === 'quitar_comida_libre') frases.push('✓ Saqué ' + (a.descripcion || 'esa comida'));
@@ -1055,7 +1071,18 @@ function App() {
         }));
         return { ok: true, seccion: args.seccion_key, opcion: args.opcion_id, puesto_label: etiqueta, seccion_label: donde };
       }
-      if (name === 'limpiar_dia') { resetAll(); return { ok: true, mensaje: 'Dia puesto en cero (chips en nada y sin comidas libres)' }; }
+      if (name === 'limpiar_dia') { resetAll(); return { ok: true, mensaje: 'Dia puesto en cero (chips en nada y sin comidas libres). Si el usuario pidio cargar algo, HACELO AHORA.' }; }
+      if (name === 'cargar_comida_tipica') {
+        const comida = String(args.comida || '').trim();
+        const prefijos = SECCIONES_POR_COMIDA[comida];
+        if (!prefijos) return { error: 'comida invalida: ' + comida + '. Validas: ' + Object.keys(SECCIONES_POR_COMIDA).join(', ') };
+        const base = diaTipicoCustom || DIA_TIPICO;
+        const parcial = {};
+        Object.keys(base).forEach(k => { if (prefijos.some(p => k.indexOf(p) === 0)) parcial[k] = base[k]; });
+        if (!Object.keys(parcial).length) return { error: 'no encontre nada del dia tipico para ' + comida };
+        setSel(prev => ({ ...prev, ...parcial }));
+        return { ok: true, comida: comida.replace('_', ' '), puestos: Object.keys(parcial).length, secciones: Object.keys(parcial) };
+      }
       if (name === 'quitar_comida_libre') {
         const t = String(args.descripcion || '').toLowerCase();
         const found = extrasLibres.find(e => e.desc.toLowerCase().includes(t));
@@ -1096,7 +1123,7 @@ function App() {
     });
     return s;
   };
-  const chatSystemPrompt = () => 'Sos el asistente nutricional dentro de la app "Mi Dia Nutricional" de Gaston. Se breve, directo, en espanol rioplatense. Confirma en una linea lo que hiciste (con kcal cuando sume comida).\n\nREGLAS DE HERRAMIENTAS:\n- Para comidas del CATALOGO (pechuga, harina de almendras, papa, hortalizas, etc.) usa seleccionar_opcion con seccion_key y opcion_id EXACTOS. NUNCA uses agregar_comida_libre para algo que esta en el catalogo.\n- agregar_comida_libre es SOLO para cosas fuera del catalogo (pizza, alfajor, leche entera, fiambre): estima vos los macros. Si es una comida de MARCA o de un restaurante especifico y no estas seguro de los macros, averigua PRIMERO y carga DESPUES (nunca al reves, para no cargar un numero inventado y corregirlo luego): si el usuario te pasa un LINK, abrilo y usa los datos de esa pagina; si tenes busqueda web disponible, busca los datos oficiales; recien si no conseguis ninguna de las dos, estima y ACLARA que es una estimacion.\n- Si el usuario quiere cargar SOLO algunas comidas (ej "solo desayuno y media mañana"), primero usa limpiar_dia y despues selecciona SOLO esas con seleccionar_opcion.\n- cargar_dia_tipico carga el dia tipico COMPLETO; no lo uses si el usuario quiere solo una parte.\n- limpiar_dia pone todo en cero. quitar_comida_libre saca una comida libre.\n- poner_gasto carga el gasto. guardar_dia ARCHIVA el dia en el historial (distinto de ver_dia, que solo MUESTRA un resumen sin guardar). Si el usuario dice "guarda el dia", usa guardar_dia.\n- NUNCA digas que guardaste, agregaste o cargaste algo sin haber usado la herramienta correspondiente; confirma SIEMPRE con el resultado real que te devuelve la herramienta.\n- Cuando el usuario te corrija un dato, te diga una comida frecuente o una preferencia, usa "recordar" para tenerlo en cuenta a futuro.\n- Si el usuario manda una IMAGEN (captura, foto de un plato, etiqueta nutricional, menu o pantalla de otra app), leela: si es una etiqueta con valores nutricionales usalos tal cual, si es un plato estima los macros; despues carga lo que corresponda con las herramientas (agregar_comida_libre o seleccionar_opcion) y deci en una linea que viste en la imagen.\n\nCATALOGO (seccion_key [comida/seccion]:opcion_id=etiqueta). Si un alimento figura ACA, va con seleccionar_opcion, NUNCA con agregar_comida_libre:\n' + catalogoTexto() + '\nDIA TIPICO (ids que selecciona por seccion): ' + JSON.stringify(DIA_TIPICO) + '\n\nMEMORIA (lo que aprendiste de Gaston, tenelo SIEMPRE en cuenta): ' + (chatMemoria.length ? chatMemoria.map(m => '- ' + m.texto).join('\n') : '(vacia por ahora)') + '\n\nEstado actual del dia: ' + JSON.stringify(resumenDia());
+  const chatSystemPrompt = () => 'Sos el asistente nutricional dentro de la app "Mi Dia Nutricional" de Gaston. Se breve, directo, en espanol rioplatense. Confirma en una linea lo que hiciste (con kcal cuando sume comida).\n\nREGLAS DE HERRAMIENTAS:\n- Para comidas del CATALOGO (pechuga, harina de almendras, papa, hortalizas, etc.) usa seleccionar_opcion con seccion_key y opcion_id EXACTOS. NUNCA uses agregar_comida_libre para algo que esta en el catalogo.\n- agregar_comida_libre es SOLO para cosas fuera del catalogo (pizza, alfajor, leche entera, fiambre): estima vos los macros. Si es una comida de MARCA o de un restaurante especifico y no estas seguro de los macros, averigua PRIMERO y carga DESPUES (nunca al reves, para no cargar un numero inventado y corregirlo luego): si el usuario te pasa un LINK, abrilo y usa los datos de esa pagina; si tenes busqueda web disponible, busca los datos oficiales; recien si no conseguis ninguna de las dos, estima y ACLARA que es una estimacion.\n- OJO CON EL DIA TIPICO, es el error mas comun: si el usuario nombra UNA comida ("desayuno tipico", "el almuerzo de siempre", "cena habitual") usa cargar_comida_tipica con esa comida. cargar_dia_tipico es SOLO cuando pide el dia ENTERO ("carga mi dia tipico", "lo de siempre"). Cargar el dia completo cuando pidio una sola comida le arruina el dia y lo enfurece.\n- Si pide varias comidas sueltas, llama cargar_comida_tipica una vez por cada una. NO uses limpiar_dia para eso: limpiar_dia borra TODO el dia y casi nunca es lo que quiere.\n- CUANDO TE CORRIGE ("no te pedi eso", "eso no", "estaba mal"): NO limpies el dia. Entende que estuvo mal, DESHACELO puntualmente y hace lo correcto EN EL MISMO TURNO. Ejemplo: si cargaste el dia entero y queria solo el desayuno, llama limpiar_dia Y ACTO SEGUIDO cargar_comida_tipica("desayuno") — las dos cosas juntas, nunca limpiar y quedarte ahi. Si no entendes que quiere, PREGUNTA en una linea en vez de hacer algo al azar.\n- NUNCA uses guardar_dia salvo que te lo pidan explicitamente ("guarda el dia", "archivalo"). Guardar por las tuyas le archiva un dia mal cargado.\n- limpiar_dia pone todo en cero. quitar_comida_libre saca una comida libre.\n- poner_gasto carga el gasto. guardar_dia ARCHIVA el dia en el historial (distinto de ver_dia, que solo MUESTRA un resumen sin guardar). Si el usuario dice "guarda el dia", usa guardar_dia.\n- NUNCA digas que guardaste, agregaste o cargaste algo sin haber usado la herramienta correspondiente; confirma SIEMPRE con el resultado real que te devuelve la herramienta.\n- Cuando el usuario te corrija un dato, te diga una comida frecuente o una preferencia, usa "recordar" para tenerlo en cuenta a futuro.\n- Si el usuario manda una IMAGEN (captura, foto de un plato, etiqueta nutricional, menu o pantalla de otra app), leela: si es una etiqueta con valores nutricionales usalos tal cual, si es un plato estima los macros; despues carga lo que corresponda con las herramientas (agregar_comida_libre o seleccionar_opcion) y deci en una linea que viste en la imagen.\n\nCATALOGO (seccion_key [comida/seccion]:opcion_id=etiqueta). Si un alimento figura ACA, va con seleccionar_opcion, NUNCA con agregar_comida_libre:\n' + catalogoTexto() + '\nDIA TIPICO (ids que selecciona por seccion): ' + JSON.stringify(DIA_TIPICO) + '\n\nMEMORIA (lo que aprendiste de Gaston, tenelo SIEMPRE en cuenta): ' + (chatMemoria.length ? chatMemoria.map(m => '- ' + m.texto).join('\n') : '(vacia por ahora)') + '\n\nEstado actual del dia: ' + JSON.stringify(resumenDia());
 
   // Prompt liviano para las vueltas en que el modelo ya hizo lo suyo y solo tiene que
   // confirmar: se le ahorra el catalogo entero (~3.400 tokens, el 70% del pedido).
