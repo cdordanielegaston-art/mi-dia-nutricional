@@ -442,6 +442,17 @@ import hashlib
 import threading
 import queue as _queue
 
+
+def _instantanea_estado():
+    """Lo que el front necesita para pintar el día. Llamar con _state_lock tomado."""
+    return {
+        "sel": dict(_state["sel"]),
+        "gasto": _state["gasto"],
+        "extrasLibres": list(_state["extrasLibres"]),
+        "memoria": list(_state["memoria"]),
+        "guardar": _state["_guardar"],
+    }
+
 # El loop de asyncio vive en un hilo propio y NO muere entre pedidos: es lo que
 # mantiene vivo al subproceso del SDK. Flask (sync, multihilo) le manda trabajo.
 class _MotorClaude:
@@ -492,6 +503,9 @@ class _MotorClaude:
             permission_mode="bypassPermissions",
             max_turns=8,
             effort="low",
+            # Sin esto el SDK entrega bloques ya terminados y el texto aparece de golpe
+            # al final; con esto llegan los deltas y la respuesta se ve escribirse.
+            include_partial_messages=True,
         )
         c = ClaudeSDKClient(options=opts)
         await c.connect()
@@ -529,9 +543,16 @@ class _MotorClaude:
         return self._client
 
     # ── un pedido ──────────────────────────────────────────────────────────────
-    async def _pedir(self, client, prompt, imagenes=None):
+    async def _pedir(self, client, prompt, imagenes=None, emitir=None):
+        """Corre un pedido. Si `emitir` viene, avisa cada bloque apenas llega.
+
+        Los 4 s de inferencia no se pueden bajar, pero mirar una pantalla quieta
+        durante 4 s y ver la respuesta escribirse no se sienten igual. Y como las
+        herramientas corren ANTES de que el modelo redacte la confirmación, el día
+        se actualiza en la pantalla bastante antes de que termine de hablar.
+        """
         from claude_agent_sdk.types import (SystemMessage, AssistantMessage,
-                                            TextBlock, ResultMessage)
+                                            TextBlock, ResultMessage, StreamEvent)
         if imagenes:
             # Con imágenes hay que mandar el mensaje entero como bloques (igual que la
             # API). El prompt de la app promete leer etiquetas nutricionales y fotos de
@@ -562,12 +583,32 @@ class _MotorClaude:
                         raise RuntimeError(
                             f"ABORTADO: apiKeySource={fuente} → facturaría por API."
                             " Correr `claude auth login` y verificar la suscripción Max.")
+            elif isinstance(msg, StreamEvent):
+                # Deltas: solo para pintar en vivo. El texto que se devuelve sale de los
+                # AssistantMessage de abajo, que son la versión final y completa.
+                if emitir:
+                    ev = msg.event or {}
+                    if ev.get("type") == "content_block_delta":
+                        d = ev.get("delta") or {}
+                        if d.get("type") == "text_delta" and d.get("text"):
+                            emitir({"tipo": "delta", "texto": d["text"]})
             elif isinstance(msg, AssistantMessage):
                 for b in msg.content:
                     if isinstance(b, TextBlock):
                         texto.append(b.text)
+                        if emitir:
+                            # Cierra el bloque: el front reemplaza lo que venía pintando
+                            # con la versión final (evita duplicar los deltas).
+                            emitir({"tipo": "texto", "texto": b.text})
                     elif type(b).__name__ == "ToolUseBlock":
-                        herramientas.append(getattr(b, "name", "?").replace("mcp__mdn__", ""))
+                        nombre = getattr(b, "name", "?").replace("mcp__mdn__", "")
+                        herramientas.append(nombre)
+                        if emitir:
+                            # La herramienta ya modificó _state: mandar el día al toque,
+                            # sin esperar a que el modelo termine de escribir.
+                            with _state_lock:
+                                emitir({"tipo": "tool", "nombre": nombre,
+                                        "state": _instantanea_estado()})
             elif isinstance(msg, ResultMessage):
                 break
         return "\n".join(texto).strip(), herramientas
@@ -599,6 +640,47 @@ class _MotorClaude:
                         except Exception:
                             pass
                     self._client = None
+
+    def preguntar_stream(self, prompt, modelo, prompt_base, conv_id=None, imagenes=None,
+                         timeout=180):
+        """Igual que preguntar(), pero devuelve un generador de eventos.
+
+        El coro corre en el hilo del motor y va dejando eventos en una cola; este
+        generador (hilo de Flask) los va sacando. Sin reintento: una vez que empezó a
+        salir texto no se puede rebobinar, así que si falla el front cae a /chat.
+        """
+        cola = _queue.Queue()
+        FIN = object()
+
+        with self._lock:
+            client = self._correr(self._asegurar(modelo, prompt_base, conv_id), timeout=90)
+
+            async def correr():
+                try:
+                    texto, tools = await self._pedir(client, prompt, imagenes,
+                                                     emitir=cola.put)
+                    cola.put({"tipo": "fin", "reply": texto or "(listo)", "tools": tools})
+                except Exception as e:
+                    cola.put({"tipo": "error", "error": str(e)})
+                finally:
+                    cola.put(FIN)
+
+            fut = asyncio.run_coroutine_threadsafe(correr(), self._loop)
+            try:
+                while True:
+                    try:
+                        ev = cola.get(timeout=timeout)
+                    except _queue.Empty:
+                        fut.cancel()
+                        yield {"tipo": "error", "error": "el modelo no respondió a tiempo"}
+                        return
+                    if ev is FIN:
+                        break
+                    yield ev
+                self._pedidos += 1
+            finally:
+                if not fut.done():
+                    fut.cancel()
 
     def estado(self):
         return {"vivo": self._client is not None, "pedidos": self._pedidos,
@@ -717,28 +799,21 @@ def warmup():
     return jsonify({"ok": True, "calentando": True})
 
 
-@app.route("/chat", methods=["POST"])
-def chat():
-    """Endpoint principal: recibe un mensaje + estado, devuelve reply + estado nuevo."""
-    try:
-        data = flask_request.get_json(force=True)
-    except Exception:
-        return jsonify({"error": "JSON inválido"}), 400
+class _PedidoInvalido(Exception):
+    pass
 
-    mensaje = data.get("message", "").strip()
+
+def _preparar(data):
+    """Valida el pedido y deja _state listo. Compartido por /chat y /chat/stream:
+    si cada uno armara el estado por su cuenta, tarde o temprano divergen."""
+    mensaje = (data.get("message") or "").strip()
     imagenes = data.get("images", []) or []
     if not mensaje and not imagenes:
-        return jsonify({"error": "message vacío"}), 400
+        raise _PedidoInvalido("message vacío")
     if imagenes and not mensaje:
         mensaje = "¿Qué ves en esta imagen? Cargá lo que corresponda."
 
-    estado = data.get("state", {})
-    modelo = data.get("model", "claude-haiku-4-5-20251001")
-    system_prompt = data.get("systemPrompt", "")
-    historial = data.get("history", []) or []
-    conv_id = data.get("convId") or None
-
-    # ── Inicializar el estado para esta request ──
+    estado = data.get("state", {}) or {}
     with _state_lock:
         _state["sel"] = dict(estado.get("sel", {}))
         _state["gasto"] = str(estado.get("gasto", "0"))
@@ -752,53 +827,149 @@ def chat():
         _state["_cat_lookup"] = _parse_catalogo(_state["catalogo"])
         _state["_guardar"] = False
 
+    prompt_base, volatil = _partir_prompt(data.get("systemPrompt", ""))
+    conv_id = data.get("convId") or None
+    # Si el proceso se va a rearmar, hay que reponerle la charla previa.
+    sembrar = _motor.estado()["pedidos"] == 0 or conv_id != _motor._conv_id
+    return {
+        "mensaje": mensaje,
+        "imagenes": imagenes,
+        "modelo": data.get("model", "claude-haiku-4-5-20251001"),
+        "conv_id": conv_id,
+        "prompt_base": prompt_base,
+        "prompt": _prompt_del_pedido(mensaje, volatil,
+                                     data.get("history", []) or [], sembrar),
+    }
+
+
+@app.route("/chat", methods=["POST"])
+def chat():
+    """Pedido de una sola vuelta: responde cuando terminó todo.
+
+    Lo usa el front como respaldo si el streaming no está disponible.
+    """
+    try:
+        data = flask_request.get_json(force=True)
+    except Exception:
+        return jsonify({"error": "JSON inválido"}), 400
+    try:
+        p = _preparar(data)
+    except _PedidoInvalido as e:
+        return jsonify({"error": str(e)}), 400
+
     t0 = datetime.now()
     herramientas = []
 
     # ── Atajo: solo si el mensaje ES el comando entero (ver _atajo_local) ──
     # Con imagen nunca hay atajo: hay que mirarla.
-    reply, fue_atajo = (None, False) if imagenes else _atajo_local(mensaje)
+    reply, fue_atajo = (None, False) if p["imagenes"] else _atajo_local(p["mensaje"])
     if fue_atajo:
-        log.info(f"[ATAJO] {(datetime.now()-t0).total_seconds():.3f}s | {mensaje[:60]}")
+        log.info(f"[ATAJO] {(datetime.now()-t0).total_seconds():.3f}s | {p['mensaje'][:60]}")
     else:
-        prompt_base, volatil = _partir_prompt(system_prompt)
-        # Si el proceso se va a rearmar, hay que reponerle la charla previa.
-        sembrar = _motor.estado()["pedidos"] == 0 or conv_id != _motor._conv_id
-        prompt = _prompt_del_pedido(mensaje, volatil, historial, sembrar)
         try:
-            reply, herramientas = _motor.preguntar(prompt, modelo, prompt_base, conv_id,
-                                                   imagenes=imagenes)
+            reply, herramientas = _motor.preguntar(
+                p["prompt"], p["modelo"], p["prompt_base"], p["conv_id"],
+                imagenes=p["imagenes"])
         except Exception as e:
             log.error(f"Error hablando con Claude: {e}\n{traceback.format_exc()}")
             return jsonify({"error": str(e)}), 500
-        log.info(f"[chat] {(datetime.now()-t0).total_seconds():.1f}s | modelo={modelo}"
-                 f"{f' | {len(imagenes)} img' if imagenes else ''}"
-                 f" | tools={herramientas or '-'} | {mensaje[:60]}")
+        n_img = len(p["imagenes"])
+        log.info(f"[chat] {(datetime.now()-t0).total_seconds():.1f}s | modelo={p['modelo']}"
+                 + (f" | {n_img} img" if n_img else "")
+                 + f" | tools={herramientas or '-'} | {p['mensaje'][:60]}")
 
-    duracion = (datetime.now() - t0).total_seconds()
-
-    # ── Devolver el estado modificado por las herramientas ──
     with _state_lock:
-        nuevo_estado = {
-            "sel": dict(_state["sel"]),
-            "gasto": _state["gasto"],
-            "extrasLibres": list(_state["extrasLibres"]),
-            "memoria": list(_state["memoria"]),
-            "guardar": _state["_guardar"],
-        }
+        nuevo_estado = _instantanea_estado()
 
     return jsonify({
         "reply": reply,
         "state": nuevo_estado,
-        "duracion": round(duracion, 1),
+        "duracion": round((datetime.now() - t0).total_seconds(), 1),
         "atajo": fue_atajo,
         "tools": herramientas,
     })
 
 
+@app.route("/chat/stream", methods=["POST"])
+def chat_stream():
+    """Igual que /chat pero por SSE: manda el texto mientras se escribe y el día
+    apenas cada herramienta lo toca, en vez de todo junto al final.
+
+    No baja los ~4 s de inferencia — baja lo que se siente, que es lo que quedaba
+    por mejorar sin recortarle nada al asistente.
+    """
+    try:
+        data = flask_request.get_json(force=True)
+    except Exception:
+        return jsonify({"error": "JSON inválido"}), 400
+    try:
+        p = _preparar(data)
+    except _PedidoInvalido as e:
+        return jsonify({"error": str(e)}), 400
+
+    t0 = datetime.now()
+
+    def evento(d):
+        return f"data: {json.dumps(d, ensure_ascii=False)}\n\n"
+
+    def generar():
+        # Atajo: sale entero, pero por el mismo canal para que el front tenga un solo camino
+        reply, fue_atajo = (None, False) if p["imagenes"] else _atajo_local(p["mensaje"])
+        if fue_atajo:
+            log.info(f"[ATAJO] {(datetime.now()-t0).total_seconds():.3f}s | {p['mensaje'][:60]}")
+            with _state_lock:
+                st = _instantanea_estado()
+            yield evento({"tipo": "fin", "reply": reply, "state": st,
+                          "atajo": True, "tools": [],
+                          "duracion": round((datetime.now()-t0).total_seconds(), 2)})
+            return
+
+        tools = []
+        try:
+            for ev in _motor.preguntar_stream(p["prompt"], p["modelo"], p["prompt_base"],
+                                              p["conv_id"], imagenes=p["imagenes"]):
+                if ev["tipo"] == "tool":
+                    tools.append(ev["nombre"])
+                    yield evento(ev)
+                elif ev["tipo"] in ("texto", "delta"):
+                    yield evento(ev)
+                elif ev["tipo"] == "error":
+                    log.error(f"[stream] {ev['error']}")
+                    yield evento(ev)
+                    return
+                elif ev["tipo"] == "fin":
+                    with _state_lock:
+                        st = _instantanea_estado()
+                    dur = (datetime.now() - t0).total_seconds()
+                    n_img = len(p["imagenes"])
+                    log.info(f"[stream] {dur:.1f}s | modelo={p['modelo']}"
+                             + (f" | {n_img} img" if n_img else "")
+                             + f" | tools={tools or '-'} | {p['mensaje'][:60]}")
+                    yield evento({"tipo": "fin", "reply": ev["reply"], "state": st,
+                                  "atajo": False, "tools": tools,
+                                  "duracion": round(dur, 1)})
+        except Exception as e:
+            log.error(f"Error en el stream: {e}\n{traceback.format_exc()}")
+            yield evento({"tipo": "error", "error": str(e)})
+
+    return app.response_class(generar(), mimetype="text/event-stream",
+                              headers={"Cache-Control": "no-cache",
+                                       "X-Accel-Buffering": "no"})
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # Main
 # ═══════════════════════════════════════════════════════════════════════════════
+
+def _puerto_ocupado(puerto):
+    """¿Ya hay algo escuchando ahí? Evita dos bridges peleándose el puerto —
+    que fue justo lo que pasó el 2026-08-13 con SPEED en el 8792: el segundo
+    arrancaba 'bien' pero los pedidos le llegaban al primero."""
+    import socket
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.settimeout(1)
+        return s.connect_ex(("127.0.0.1", puerto)) == 0
+
 
 def main():
     parser = argparse.ArgumentParser(description="MDN Bridge — Max subscription proxy")
@@ -808,6 +979,21 @@ def main():
     log.info("=" * 60)
     log.info("MDN BRIDGE — Mi Día Nutricional + Claude Max")
     log.info("=" * 60)
+
+    if _puerto_ocupado(args.port):
+        try:
+            import urllib.request
+            with urllib.request.urlopen(
+                    f"http://127.0.0.1:{args.port}/status", timeout=3) as r:
+                if json.loads(r.read().decode()).get("ok"):
+                    log.error(f"Ya hay un MDN Bridge escuchando en el {args.port}. "
+                              f"No arranco un segundo.")
+                    return 0
+        except Exception:
+            pass
+        log.error(f"El puerto {args.port} está ocupado por OTRA cosa. "
+                  f"Arrancar con --port <otro> o liberarlo.")
+        return 1
 
     # Preflight
     ok, st = preflight()

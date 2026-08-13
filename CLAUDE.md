@@ -152,6 +152,26 @@ pedidos (un `session_id` nuevo NO la aísla), así que "no, eso no" entiende a q
 `/warmup` lo arranca cuando la app abre, para que el primer mensaje tampoco pague los 6,8 s.
 Se recicla si cambia el modelo/catálogo, si el front manda otro `convId`, o cada 40 pedidos.
 
+### Streaming (`/chat/stream`, SSE) — qué mejora y qué no
+
+Los ~4 s de inferencia no bajan. Lo que baja es **la espera en blanco**, y solo donde había mucha:
+
+| Caso | Espera en blanco que se ahorra |
+|---|---|
+| Análisis largo (~3.400 caracteres) | **12,0 s** (47 deltas) |
+| Con búsqueda web | 2,8 s |
+| Confirmación de una línea | 0 s — se genera en ~200 ms, no hay nada que ver escribirse |
+| El **día** en pantalla (cualquier caso) | **1,5–2,0 s** — la herramienta corre antes de que redacte |
+
+Necesita `include_partial_messages=True`: sin eso el SDK entrega bloques ya cerrados y el texto
+aparece de golpe igual. Llegan **deltas** (pintar) y **bloques cerrados** (texto definitivo): el front
+*reemplaza* con el bloque en vez de sumarlo, si no duplica todo. `/chat` queda como respaldo y el
+front cae solo si el stream falla.
+
+**Estado de verificación** (2026-08-13): probado Haiku y Sonnet, imágenes con el payload real del
+front, muerte del proceso `claude` a mano (se rearma solo), instancia única, y streaming medido en
+el navegador. **Sin probar:** el celular por Tailscale y el reciclado a los 40 pedidos.
+
 ## ⚠️ LECCIÓN (2026-08-13) — optimicé por el camino fácil y le saqué la mitad de la app
 
 **ERROR.** Ante "está muy lento", metí atajos con regex para saltear a Claude. Bajó a 0,3 s y

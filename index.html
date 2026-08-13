@@ -160,6 +160,22 @@ const CHAT_MODELS = [
   { id: 'gpt-4o',                  label: 'GPT-4o · potente',                    grupo: 'sin_g',  prov: 'openai' }
 ];
 // Mapeo bridge model id -> modelo real de Claude
+// Que mostrar mientras corre cada herramienta (buscar en la web tarda ~15s en silencio)
+const ETIQUETA_TOOL = {
+  WebSearch: '🔎 buscando los datos oficiales…',
+  WebFetch: '🔗 abriendo el link…',
+  seleccionar_opcion: '✏️ cargando…',
+  agregar_comida_libre: '🍽️ agregando…',
+  cargar_dia_tipico: '📋 cargando el día típico…',
+  cargar_comida_tipica: '📋 cargando…',
+  poner_gasto: '🔥 poniendo el gasto…',
+  quitar_comida_libre: '🗑 sacando…',
+  limpiar_dia: '🧹 limpiando…',
+  guardar_dia: '💾 guardando…',
+  ver_dia: '📊 mirando el día…',
+  recordar: '🧠 anotando…',
+  olvidar: '🧠 borrando…',
+};
 const BRIDGE_MODELS = {
   'bridge-haiku': 'claude-haiku-4-5-20251001',
   'bridge-sonnet': 'claude-sonnet-4-6',
@@ -1017,6 +1033,10 @@ function App() {
   const [chatArriba, setChatArriba] = useState(false);   // el mismo asistente, arriba de todo
   const [segEspera, setSegEspera] = useState(0);         // cronometro en vivo mientras piensa
   const [chatBusy, setChatBusy] = useState(false);
+  // Texto parcial mientras el bridge lo va escribiendo (streaming)
+  const [chatStream, setChatStream] = useState('');
+  // Que esta haciendo ahora mismo: buscar en la web puede tardar 15s en silencio
+  const [chatTool, setChatTool] = useState('');
   const [showChat, setShowChat] = useState(false);
   const [showChatCfg, setShowChatCfg] = useState(false);
   // Bridge: URL del backend que corre en la PC con la suscripción Max
@@ -1104,7 +1124,7 @@ function App() {
   };
   const gastoHoyUSD = () => { const hoy = new Date().toISOString().split('T')[0]; const d = gastoIA[hoy] || {}; return Object.values(d).reduce((s, m) => s + (m.usd || 0), 0); };
   const labelModelo = (id) => { const m = CHAT_MODELS.find(x => x.id === id); return m ? m.label.split(' ·')[0] : id; };
-  useEffect(() => { if (chatEndRef.current) chatEndRef.current.scrollIntoView({ behavior: 'smooth' }); }, [chatMsgs, chatBusy]);
+  useEffect(() => { if (chatEndRef.current) chatEndRef.current.scrollIntoView({ behavior: 'smooth' }); }, [chatMsgs, chatBusy, chatStream]);
 
   const resumenDia = () => { const L = liveRef.current; const r = L.results || results; const cv = L.comoVoy || comoVoy; return {
     kcal: r.kcal, proteina: Math.round(r.p), carbohidratos: Math.round(r.c), grasa: Math.round(r.f),
@@ -1254,39 +1274,103 @@ function App() {
         catalogo: catalogoTexto(),
       },
     };
+    // Aplica el dia que devuelve el bridge (las herramientas ya corrieron alla)
+    const aplicarEstado = (st) => {
+      if (!st) return;
+      if (st.sel) setSel(st.sel);
+      if (st.gasto !== undefined) setGastoWhoop(String(st.gasto));
+      if (st.extrasLibres) setExtrasLibres(st.extrasLibres);
+      if (st.memoria) setChatMemoria(st.memoria);
+      if (st.guardar) ejecutarTool('guardar_dia', {});   // el modelo pidio archivar
+    };
+
     const ctrl = new AbortController();
     // 30s cortaba justo los pedidos que mas valen: buscar los macros oficiales de una
     // marca (WebSearch/WebFetch) o rearmar el proceso. 120s cubre el peor caso real.
     const reloj = setTimeout(() => ctrl.abort(), 120000);
+
+    // ── Streaming: el texto se ve mientras se escribe y el dia se actualiza apenas
+    // corre cada herramienta, en vez de todo junto al final. Los ~4s de inferencia no
+    // bajan; lo que baja es la espera en blanco, que era lo que se sentia lento.
+    try {
+      const resp = await fetch(bridgeUrl + '/chat/stream', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+        signal: ctrl.signal,
+      });
+      if (!resp.ok || !resp.body) throw new Error('sin stream');
+
+      const lector = resp.body.getReader();
+      const dec = new TextDecoder();
+      let buffer = '', cerro = false;
+      let cerrado = '';    // bloques ya terminados (texto definitivo)
+      let parcial = '';    // el bloque que se esta escribiendo ahora, armado con deltas
+
+      while (true) {
+        const { done, value } = await lector.read();
+        if (done) break;
+        buffer += dec.decode(value, { stream: true });
+        const partes = buffer.split('\n\n');
+        buffer = partes.pop() || '';
+        for (const parte of partes) {
+          const linea = parte.split('\n').find(l => l.indexOf('data: ') === 0);
+          if (!linea) continue;
+          let ev; try { ev = JSON.parse(linea.slice(6)); } catch (e) { continue; }
+          if (ev.tipo === 'delta') {
+            // Se ve escribir letra por letra
+            parcial += ev.texto;
+            setChatStream(cerrado + parcial);
+          } else if (ev.tipo === 'texto') {
+            // Bloque terminado: reemplaza a los deltas, no se suma (si no, duplica)
+            cerrado += (cerrado ? '\n' : '') + ev.texto;
+            parcial = '';
+            setChatStream(cerrado);
+          } else if (ev.tipo === 'tool') {
+            aplicarEstado(ev.state);              // el dia cambia ANTES de que termine
+            setChatTool(ETIQUETA_TOOL[ev.nombre] || '');
+          } else if (ev.tipo === 'error') {
+            throw new Error(ev.error);
+          } else if (ev.tipo === 'fin') {
+            aplicarEstado(ev.state);
+            cerrado = ev.reply || cerrado || parcial;
+            cerro = true;
+          }
+        }
+      }
+      clearTimeout(reloj);
+      setChatStream(''); setChatTool('');
+      if (cerro) return (cerrado || '(listo)').trim();
+      throw new Error('el stream se corto antes de terminar');
+    } catch (errStream) {
+      clearTimeout(reloj);
+      setChatStream(''); setChatTool('');
+      if (errStream.name === 'AbortError') throw new Error('El bridge tardo demasiado.');
+      // Si el streaming no anduvo, el pedido de una sola vuelta sigue estando.
+      console.warn('stream fallo, voy por /chat:', errStream.message);
+    }
+
+    const ctrl2 = new AbortController();
+    const reloj2 = setTimeout(() => ctrl2.abort(), 120000);
     let resp;
     try {
       resp = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
-        signal: ctrl.signal,
+        signal: ctrl2.signal,
       });
     } catch (err) {
-      clearTimeout(reloj);
+      clearTimeout(reloj2);
       throw new Error('No pude conectar con el bridge (' + (bridgeUrl) + '). ¿Está corriendo mdn_bridge.py en la PC? ¿Tailscale está conectado?');
     }
-    clearTimeout(reloj);
+    clearTimeout(reloj2);
     if (!resp.ok) {
       const t = await resp.text();
       throw new Error('Bridge ' + resp.status + ': ' + t.slice(0, 200));
     }
     const data = await resp.json();
-    // Aplicar el estado que el bridge devuelve (las herramientas ya corrieron)
-    if (data.state) {
-      if (data.state.sel) setSel(data.state.sel);
-      if (data.state.gasto !== undefined) setGastoWhoop(String(data.state.gasto));
-      if (data.state.extrasLibres) setExtrasLibres(data.state.extrasLibres);
-      if (data.state.memoria) setChatMemoria(data.state.memoria);
-      if (data.state.guardar) {
-        // El modelo pidió guardar — ejecutar guardar_dia localmente
-        ejecutarTool('guardar_dia', {});
-      }
-    }
+    aplicarEstado(data.state);
     return (data.reply || '(listo)').trim();
   };
 
@@ -1687,7 +1771,14 @@ function App() {
                                   background: m.role === 'user' ? "#6C5CE7" : "#1A2744", color: "#fff" }}>{m.text}</div>
                   </div>
                 ))}
-                {chatBusy && <div style={{ fontSize: 11, color: segEspera > 10 ? "#FF8C42" : "#8899BB", fontStyle: "italic" }}>pensando… {segEspera}s{segEspera > 10 ? " (se está colgando)" : ""}</div>}
+                {/* Lo que va escribiendo, en vivo: la espera se ve trabajando */}
+                {chatStream && (
+                  <div style={{ display: "flex", justifyContent: "flex-start", marginBottom: 6 }}>
+                    <div style={{ maxWidth: "88%", padding: "6px 9px", borderRadius: 9, fontSize: 12, lineHeight: 1.4, whiteSpace: "pre-wrap",
+                                  background: "#1A2744", color: "#fff", opacity: .85 }}>{chatStream}<span style={{ opacity: .5 }}>▌</span></div>
+                  </div>
+                )}
+                {chatBusy && !chatStream && <div style={{ fontSize: 11, color: segEspera > 10 ? "#FF8C42" : "#8899BB", fontStyle: "italic" }}>{chatTool || "pensando…"} {segEspera}s{segEspera > 20 ? " (se está colgando)" : ""}</div>}
               </div>
             )}
             <div style={{ display: "flex", gap: 6, padding: 8 }}>
