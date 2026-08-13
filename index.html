@@ -143,8 +143,9 @@ const GRUPOS = [
 // Si hay bridge disponible, el default se cambia al detectarlo (ver useEffect).
 const MODELO_INICIAL = 'gemini-3.5-flash-lite-p';
 // URL del bridge: la PC de Gaston en Tailscale. En la PC local es localhost.
+// '' = mismo origen (cuando la PWA se sirve desde el bridge, no hay CORS ni mixed content)
 const BRIDGE_URL_STORAGE = 'miDiaNutricional_bridgeUrl';
-const BRIDGE_URLS_DEFAULT = ['http://localhost:8793', 'http://100.110.55.41:8793'];
+const BRIDGE_URLS_DEFAULT = ['', 'http://localhost:8793', 'http://100.110.55.41:8793'];
 const CHAT_MODELS = [
   { id: 'bridge-haiku',  label: 'Haiku · rápido · gratis',                     grupo: 'bridge', prov: 'bridge' },
   { id: 'bridge-sonnet', label: 'Sonnet · el más capaz · gratis',              grupo: 'bridge', prov: 'bridge' },

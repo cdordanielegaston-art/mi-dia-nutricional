@@ -55,7 +55,7 @@ if sys.platform == "win32":
         return _orig_popen_init(self, *a, **kw)
     subprocess.Popen.__init__ = _popen_sin_consola
 
-from flask import Flask, request as flask_request, jsonify
+from flask import Flask, request as flask_request, jsonify, send_from_directory
 from flask_cors import CORS
 
 PORT = 8793
@@ -348,8 +348,26 @@ async def llamar_claude(prompt, system_prompt, modelo="claude-haiku-4-5-20251001
 # Flask app
 # ═══════════════════════════════════════════════════════════════════════════════
 
-app = Flask(__name__)
+app = Flask(__name__, static_folder=str(AQUI), static_url_path="/static")
 CORS(app)  # el front viene de github.io o localhost — necesita CORS
+
+# ── Servir la PWA directamente (resuelve mixed content desde el celular) ──
+# El celular abre http://<tailscale-ip>:8793/ y todo es mismo origen.
+PWA_FILES = {"index.html", "sw.js", "manifest.json", "hot-pot-192.png", "hot-pot-512.png"}
+
+@app.route("/", methods=["GET"])
+def pwa_root():
+    """Sirve la PWA desde el bridge — mismo origen, sin CORS ni mixed content."""
+    resp = send_from_directory(str(AQUI), "index.html")
+    resp.headers["Cache-Control"] = "no-store, max-age=0"
+    return resp
+
+@app.route("/<path:filename>", methods=["GET"])
+def pwa_file(filename):
+    """Sirve archivos estáticos de la PWA (sw.js, manifest, iconos)."""
+    if filename in PWA_FILES or filename.endswith(".png"):
+        return send_from_directory(str(AQUI), filename)
+    return jsonify({"error": "not found"}), 404
 
 
 @app.route("/status", methods=["GET"])
