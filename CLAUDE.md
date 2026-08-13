@@ -174,7 +174,27 @@ front cae solo si el stream falla.
 
 **Estado de verificación** (2026-08-13): probado Haiku y Sonnet, imágenes con el payload real del
 front, muerte del proceso `claude` a mano (se rearma solo), instancia única, y streaming medido en
-el navegador. **Sin probar:** el celular por Tailscale y el reciclado a los 40 pedidos.
+el navegador. **Sin probar:** el reciclado a los 40 pedidos.
+
+### Por qué la app tardaba una eternidad en abrir desde el celular
+
+No era el bridge (responde en 100 ms por Tailscale) ni el firewall: era **el peso de la página**.
+
+| | Antes | Ahora |
+|---|---|---|
+| Librerías (React, ReactDOM, **Babel**, jsPDF) | 3,3 MB **de internet** | 757 KB por Tailscale, gzip |
+| index.html | 189 KB | 49 KB (gzip) |
+| Segunda carga | **igual, 3,5 MB** | **0 KB** (todo del caché) |
+
+**Babel solo son 2,78 MB** — el 85%. Y el agravante: por **HTTP contra una IP no hay contexto
+seguro**, así que el **service worker NO se registra** y no hay caché de PWA — el celular se bajaba
+los 3,5 MB **en cada carga**. Por eso se sentía peor cada vez, no mejor.
+
+Arreglo: `bajar_vendor.ps1` las deja en `vendor/` y el bridge las sirve con gzip y
+`Cache-Control: immutable` (eso da caché HTTP aunque no haya service worker). El `index.html`
+**sigue apuntando al CDN** —así GitHub Pages funciona sin bridge— y el bridge **reescribe las URLs
+al servirlo** (`VENDOR_LOCAL`): un solo archivo, sin duplicar. Si falta un vendor, esa librería
+queda en el CDN y el log lo avisa. `vendor/` no va al repo: correr `bajar_vendor.ps1` en cada PC.
 
 ## ⚠️ LECCIÓN (2026-08-13) — optimicé por el camino fácil y le saqué la mitad de la app
 

@@ -747,12 +747,73 @@ CORS(app)  # el front viene de github.io o localhost — necesita CORS
 # El celular abre http://<tailscale-ip>:8793/ y todo es mismo origen.
 PWA_FILES = {"index.html", "sw.js", "manifest.json", "hot-pot-192.png", "hot-pot-512.png"}
 
+# Las librerías del CDN que se sirven desde acá. El index.html sigue apuntando al
+# CDN (para que GitHub Pages ande sin bridge) y se reescribe al vuelo al servirlo:
+# así hay UN solo index.html y el que no tenga su archivo local queda en el CDN.
+VENDOR_LOCAL = {
+    "https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js":
+        "react.min.js",
+    "https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js":
+        "react-dom.min.js",
+    "https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.9/babel.min.js":
+        "babel.min.js",
+    "https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js":
+        "jspdf.umd.min.js",
+}
+
+
 @app.route("/", methods=["GET"])
 def pwa_root():
     """Sirve la PWA desde el bridge — mismo origen, sin CORS ni mixed content."""
-    resp = send_from_directory(str(AQUI), "index.html")
-    resp.headers["Cache-Control"] = "no-store, max-age=0"
-    return resp
+    html = (AQUI / "index.html").read_text(encoding="utf-8")
+
+    reemplazadas = 0
+    for url, archivo in VENDOR_LOCAL.items():
+        if url in html and (AQUI / "vendor" / archivo).is_file():
+            html = html.replace(url, f"./vendor/{archivo}")
+            reemplazadas += 1
+    if reemplazadas < len(VENDOR_LOCAL):
+        # Que no pase inadvertido: si falta un vendor, el celular lo baja de internet.
+        log.warning(f"[vendor] {reemplazadas}/{len(VENDOR_LOCAL)} librerías locales; "
+                    f"el resto sale del CDN (revisar la carpeta vendor/)")
+
+    datos = html.encode("utf-8")
+    headers = {"Content-Type": "text/html; charset=utf-8",
+               "Cache-Control": "no-store, max-age=0"}
+    # 189 KB de HTML por datos móviles duelen; comprimido son ~40 KB.
+    if "gzip" in (flask_request.headers.get("Accept-Encoding") or ""):
+        import gzip as _gzip
+        datos = _gzip.compress(datos, 6)
+        headers["Content-Encoding"] = "gzip"
+    headers["Content-Length"] = str(len(datos))
+    return app.response_class(datos, headers=headers)
+
+@app.route("/vendor/<path:filename>", methods=["GET"])
+def pwa_vendor(filename):
+    """React/Babel/jsPDF servidos desde acá en vez de bajarlos de internet.
+
+    Medido el 2026-08-13 desde otra máquina de la tailnet: los 4 CDN son 3,3 MB, de
+    los cuales Babel solo son 2,78 MB. Y como por HTTP contra una IP no hay contexto
+    seguro, el service worker NO se registra: sin caché, el celular se bajaba los
+    3,3 MB de internet EN CADA CARGA. Desde acá van por Tailscale y comprimidos.
+    """
+    if "/" in filename or "\\" in filename or not filename.endswith(".js"):
+        return jsonify({"error": "not found"}), 404
+    ruta = AQUI / "vendor" / filename
+    if not ruta.is_file():
+        return jsonify({"error": "not found"}), 404
+
+    datos = ruta.read_bytes()
+    headers = {"Content-Type": "application/javascript; charset=utf-8",
+               # Son versiones fijas: que el celular no las vuelva a pedir nunca.
+               "Cache-Control": "public, max-age=31536000, immutable"}
+    if "gzip" in (flask_request.headers.get("Accept-Encoding") or ""):
+        import gzip as _gzip
+        datos = _gzip.compress(datos, 6)
+        headers["Content-Encoding"] = "gzip"
+    headers["Content-Length"] = str(len(datos))
+    return app.response_class(datos, headers=headers)
+
 
 @app.route("/<path:filename>", methods=["GET"])
 def pwa_file(filename):
