@@ -294,6 +294,71 @@ def olvidar(texto: str) -> dict:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# Atajos locales — comandos obvios se resuelven SIN llamar a Claude (~0ms)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+import re
+
+def _atajo_local(msg):
+    """Intenta resolver el mensaje sin Claude. Retorna (reply, True) o (None, False)."""
+    m = msg.lower().strip()
+
+    # ── Poner gasto ──
+    # "poneme 2400 de gasto", "gasto 2400", "2400 de gasto", "gasto: 2400"
+    match = re.search(r'(?:gasto|quem[aó])\D*(\d{3,5})', m)
+    if not match:
+        match = re.search(r'(\d{3,5})\s*(?:de\s+)?(?:gasto|kcal?\s*(?:quemad|de\s*gasto|gast))', m)
+    if match:
+        kcal = int(match.group(1))
+        if 100 <= kcal <= 9999:
+            r = poner_gasto(kcal)
+            return f"✅ Gasto: **{kcal} kcal**", True
+
+    # ── Cargar día típico completo ──
+    if re.search(r'(?:carg|pon).{0,15}(?:d[ií]a\s*t[ií]pico|tipico|típico)', m) and \
+       not re.search(r'desayuno|almuerzo|cena|merienda|media', m):
+        r = cargar_dia_tipico()
+        return "✅ Día típico cargado", True
+
+    # ── Cargar comida típica individual ──
+    comidas_map = {
+        'desayuno': 'desayuno', 'media mañana': 'media_manana', 'media manana': 'media_manana',
+        'almuerzo': 'almuerzo', 'merienda': 'merienda', 'cena': 'cena',
+    }
+    for nombre, key in comidas_map.items():
+        if nombre in m and re.search(r'(?:carg|pon|tipic|típic)', m):
+            r = cargar_comida_tipica(key)
+            if "error" not in r:
+                return f"✅ {nombre.capitalize()} típico cargado", True
+            break
+
+    # ── Limpiar día ──
+    if re.search(r'(?:limpi|borr|reset|vaciar|poner.{0,5}cero)', m) and \
+       re.search(r'(?:d[ií]a|todo|dia)', m):
+        r = limpiar_dia()
+        return "✅ Día limpiado", True
+
+    # ── Ver día / cómo voy ──
+    if re.search(r'(?:c[oó]mo\s*voy|ver\s*d[ií]a|resumen|cu[aá]nto|cuantas?\s*cal)', m):
+        r = ver_dia()
+        resumen = _state.get("resumen", {})
+        kcal = resumen.get("kcal", "?")
+        prot = resumen.get("p", "?")
+        gasto = _state.get("gasto", "0")
+        if gasto and gasto != "0":
+            deficit = int(gasto) - (int(kcal) if isinstance(kcal, (int, float)) else 0)
+            return f"📊 **{kcal} kcal** · {prot}g prot · gasto {gasto} · déficit {deficit}", True
+        return f"📊 **{kcal} kcal** · {prot}g prot (sin gasto cargado)", True
+
+    # ── Guardar día ──
+    if re.search(r'guard[aáe]', m) and re.search(r'd[ií]a|dia', m):
+        r = guardar_dia()
+        return "✅ Día marcado para guardar", True
+
+    return None, False
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # Llamada al Agent SDK
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -315,7 +380,7 @@ async def llamar_claude(prompt, system_prompt, modelo="claude-haiku-4-5-20251001
         tools=[],                    # sin herramientas built-in del CLI
         setting_sources=[],          # no cargar CLAUDE.md ni settings
         permission_mode="bypassPermissions",
-        max_turns=8,
+        max_turns=4,
         effort="low",
     )
 
@@ -407,14 +472,21 @@ def chat():
         _state["_guardar"] = False
 
     t0 = datetime.now()
-    try:
-        reply = asyncio.run(llamar_claude(mensaje, system_prompt, modelo))
-    except Exception as e:
-        log.error(f"Error en llamar_claude: {e}\n{traceback.format_exc()}")
-        return jsonify({"error": str(e)}), 500
 
-    duracion = (datetime.now() - t0).total_seconds()
-    log.info(f"[chat] {duracion:.1f}s | modelo={modelo} | msg={mensaje[:60]}")
+    # ── Atajos locales: resolver sin Claude si es un comando obvio ──
+    atajo_reply, fue_atajo = _atajo_local(mensaje)
+    if fue_atajo:
+        reply = atajo_reply
+        duracion = (datetime.now() - t0).total_seconds()
+        log.info(f"[ATAJO] {duracion:.3f}s | msg={mensaje[:60]}")
+    else:
+        try:
+            reply = asyncio.run(llamar_claude(mensaje, system_prompt, modelo))
+        except Exception as e:
+            log.error(f"Error en llamar_claude: {e}\n{traceback.format_exc()}")
+            return jsonify({"error": str(e)}), 500
+        duracion = (datetime.now() - t0).total_seconds()
+        log.info(f"[chat] {duracion:.1f}s | modelo={modelo} | msg={mensaje[:60]}")
 
     # ── Devolver el estado modificado por las herramientas ──
     with _state_lock:
