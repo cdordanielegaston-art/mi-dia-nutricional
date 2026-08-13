@@ -30,9 +30,12 @@ if (-not (Test-Path $SCRIPT)) {
     exit 1
 }
 
-# pythonw NO sirve: muere mudo porque logging necesita sys.stderr y ahi es None.
-# python.exe + tarea "oculta" da lo mismo (sin ventana) pero con errores visibles en el log.
-$python = (Get-Command python -ErrorAction SilentlyContinue).Source
+# pythonw.exe: sin consola y, por lo tanto, sin conhost. Antes moria mudo porque
+# logging.basicConfig arma un StreamHandler(sys.stderr) y bajo pythonw stderr es None;
+# el bridge ahora redirige stdout/stderr al log ANTES de tocar logging, asi que anda.
+# Si igual fallara, el motivo queda escrito en logs\bridge_<fecha>.log.
+$python = (Get-Command pythonw -ErrorAction SilentlyContinue).Source
+if (-not $python) { $python = (Get-Command python -ErrorAction SilentlyContinue).Source }
 if (-not $python) { Write-Host "No encuentro python en el PATH" -ForegroundColor Red; exit 1 }
 
 $accion    = New-ScheduledTaskAction -Execute $python -Argument "`"$SCRIPT`"" -WorkingDirectory $PSScriptRoot

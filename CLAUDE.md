@@ -135,8 +135,12 @@ Backend que conecta la app con la **suscripción Claude Max** ($0 API) vía **Ag
 3. Todo es mismo origen → sin CORS, sin mixed content
 4. El chat auto-detecta el bridge y selecciona Haiku gratis
 
-**pythonw NO funciona** — muere antes de que `logging.basicConfig` cree el `StreamHandler(sys.stderr)`,
-porque `sys.stderr` es `None`. Usar `python.exe` + `CreateNoWindow` en su lugar.
+**Arranca solo** con la tarea programada `MDN Bridge` (`instalar_autostart.ps1`, `-Quitar` la saca).
+Corre con **`pythonw`**: sin ventana y **sin conhost**, CPU 0% en reposo, ~78 MB.
+
+⚠️ `pythonw` moría mudo hasta el 2026-08-13: `logging.basicConfig` arma un `StreamHandler(sys.stderr)`
+y bajo `pythonw` `sys.stderr` es `None`. El fix es redirigir `stdout`/`stderr` al log **arriba de todo
+el módulo, antes de tocar `logging`** — hacerlo dentro de `__main__` es tarde, el import ya explotó.
 
 ### De dónde salía la lentitud (medido, no supuesto)
 

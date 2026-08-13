@@ -58,7 +58,8 @@ if sys.platform == "win32":
 from flask import Flask, request as flask_request, jsonify, send_from_directory
 from flask_cors import CORS
 
-PORT = 8793
+PORT = 8793                 # default; --port lo cambia
+PUERTO_REAL = [PORT]        # el que realmente se abrió, para que /status no mienta
 FACTURABLES = ("user", "project", "org", "temporary")
 
 # ── Logging ──────────────────────────────────────────────────────────────────
@@ -764,7 +765,8 @@ def pwa_file(filename):
 @app.route("/status", methods=["GET"])
 def status():
     """Health check rápido para que el front sepa si el bridge está vivo."""
-    return jsonify({"ok": True, "version": "2.0.0", "port": PORT,
+    # PORT es el default; con --port el real es otro y hay que decir ESE.
+    return jsonify({"ok": True, "version": "2.1.0", "port": PUERTO_REAL[0],
                     "motor": _motor.estado()})
 
 
@@ -1007,6 +1009,7 @@ def main():
     log.info(f"MCP tools: {len(mcp._tool_manager._tools)} herramientas registradas")
 
     puerto = args.port
+    PUERTO_REAL[0] = puerto
     log.info(f"Escuchando en 0.0.0.0:{puerto}")
     log.info(f"Desde la PC:  http://localhost:{puerto}/status")
     log.info(f"Desde Tailscale: http://100.110.55.41:{puerto}/status")
