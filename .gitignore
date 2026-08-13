@@ -1,2 +1,6 @@
 clave_google.txt
 clave_google_pago.txt
+__pycache__/
+.claude/
+logs/bridge_*.log
+logs/bridge_crash_*.log
