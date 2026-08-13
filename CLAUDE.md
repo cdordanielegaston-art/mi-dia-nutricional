@@ -137,3 +137,58 @@ Backend que conecta la app con la **suscripción Claude Max** ($0 API) vía **Ag
 
 **pythonw NO funciona** — muere antes de que `logging.basicConfig` cree el `StreamHandler(sys.stderr)`,
 porque `sys.stderr` es `None`. Usar `python.exe` + `CreateNoWindow` en su lugar.
+
+### De dónde salía la lentitud (medido, no supuesto)
+
+| Componente | Tiempo | ¿Evitable? |
+|---|---|---|
+| Arrancar el proceso `claude.exe` | **6,81 s** | ✅ sí — `ClaudeSDKClient` lo deja vivo |
+| Inferencia | 4,07 s | ❌ no |
+
+`query()` levanta un proceso por pedido → pagaba 6,81 s **siempre**. `ClaudeSDKClient` lo abre una
+vez: **11 s → ~5 s sin tocar una sola capacidad**. El proceso además conserva la conversación entre
+pedidos (un `session_id` nuevo NO la aísla), así que "no, eso no" entiende a qué se refiere.
+
+`/warmup` lo arranca cuando la app abre, para que el primer mensaje tampoco pague los 6,8 s.
+Se recicla si cambia el modelo/catálogo, si el front manda otro `convId`, o cada 40 pedidos.
+
+## ⚠️ LECCIÓN (2026-08-13) — optimicé por el camino fácil y le saqué la mitad de la app
+
+**ERROR.** Ante "está muy lento", metí atajos con regex para saltear a Claude. Bajó a 0,3 s y
+**rompió cuatro cosas a la vez**. Gastón lo resumió: *"perdió funcionalidad, velocidad, rendimiento
+y hasta inteligencia"*. Un test de 22 mensajes reales dio **6 falsos positivos**:
+
+| Le decías | Hacía |
+|---|---|
+| "poné pechuga 200g en el almuerzo" | cargaba el **almuerzo típico entero**, pisándole el pedido |
+| "poneme 2400 de gasto y cargame el desayuno" | solo el gasto — **perdía la mitad** |
+| "gasté 2400 hoy, ¿cuánto déficit tengo?" | **ni ponía el gasto** y contestaba el resumen viejo |
+| "¿cómo voy con la proteína?" | plantilla fija en vez de análisis |
+
+Y arrastraba otras tres pérdidas que **no eran de los atajos sino del bridge desde el día uno**:
+`tools=[]` (sin WebSearch/WebFetch, con un prompt que le pide buscar datos oficiales), sin historial
+(mandaba solo el último mensaje) y las **imágenes descartadas en silencio**.
+
+**CAUSA RAÍZ.** Los atajos hacían *matching por substring sobre lenguaje natural* — exactamente el
+trabajo que un LLM hace bien y una regex no. Y yo **nunca medí de dónde venían los 11 s**: si lo
+hubiera hecho, habría visto que el 65% era arrancar el proceso, no la inteligencia. **Optimicé lo que
+era fácil de recortar en vez de lo que estaba costando el tiempo.**
+
+**REGLA.**
+- **Medir antes de optimizar.** Un spike de 30 líneas (`arranque` vs `inferencia`) mostró que el
+  problema no era el modelo. Toda la mejora real salió de ahí; los atajos solo hicieron daño.
+- **Un atajo se ancla con `^...$` y cubre el mensaje COMPLETO.** Si sobra una palabra, va a Claude.
+  Un atajo de más cuesta un día mal cargado; uno de menos cuesta 4 segundos. **La asimetría manda.**
+- **Sin atajo para lo que pide matiz** ("cómo voy", "guardá"): una plantilla fija ahí se lee como que
+  el asistente se volvió tonto.
+- **Todo atajo tiene que dejar rastro para el modelo.** Segundo bug, encontrado por el mismo test:
+  "cargame el almuerzo típico" (atajo) → "no, pechuga de 200 mejor" → Claude, que **nunca se enteró
+  del almuerzo**, la puso en el desayuno. El atajo no estaba mal escrito: **faltaba contarle lo que
+  había hecho**. Ahora cada atajo apila su acción en `_acciones_atajo` y el próximo pedido la lleva.
+- **La prueba es una CONVERSACIÓN, no un mensaje.** Los dos bugs peores solo aparecen en el
+  mensaje N+1. `scratchpad/test_conversacion.py` corre un guión de 7 vueltas encadenadas y verifica
+  el `state` resultante, no el texto de la respuesta.
+
+**Corolario:** mis bugs no fueron líneas equivocadas — fueron **líneas ausentes** (el rastro del
+atajo, las tools, el historial, las imágenes). Ninguna falla ruidosa: la app arrancaba, contestaba
+y se veía bien. Por eso hay que ejercitarla, no leerla.

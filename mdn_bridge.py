@@ -294,119 +294,363 @@ def olvidar(texto: str) -> dict:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# Atajos locales — comandos obvios se resuelven SIN llamar a Claude (~0ms)
+# Atajos locales — SOLO cuando el mensaje ES el comando entero, nada más
 # ═══════════════════════════════════════════════════════════════════════════════
+#
+# ⚠️ LECCIÓN (2026-08-13) — la primera versión buscaba SUBSTRINGS y rompió la app.
+# "poné pechuga 200g en el almuerzo" contiene "pon"+"almuerzo" → cargaba el almuerzo
+# típico ENTERO y pisaba el pedido. "poneme 2400 de gasto y cargame el desayuno"
+# hacía solo el gasto. 6 de 22 mensajes reales salían mal.
+#
+# REGLA: el patrón se ancla con ^...$ y cubre el mensaje COMPLETO. Si sobra una sola
+# palabra, va a Claude. Un atajo de más cuesta un día mal cargado; un atajo de menos
+# cuesta 4 segundos. La asimetría manda.
+#
+# Tampoco hay atajo para "cómo voy" ni "guardá": piden matiz (análisis, confirmar
+# qué se archiva) y una plantilla fija ahí se lee como que el asistente se volvió tonto.
 
 import re
 
+# Ruido que puede envolver un comando sin cambiar su significado
+_CORTESIA = r'(?:por\s+favor|porfa|dale|che|ok|listo|gracias|ahora|ya)'
+_LIMPIA_BORDES = re.compile(
+    rf'^(?:{_CORTESIA}[\s,]+)+|(?:[\s,]+{_CORTESIA})+$|[\s.,!¡?¿]+$', re.I)
+
+def _normalizar(msg):
+    """Baja a minúsculas, saca acentos de las vocales y poda cortesía/puntuación."""
+    m = msg.strip().lower()
+    for a, b in (("á", "a"), ("é", "e"), ("í", "i"), ("ó", "o"), ("ú", "u"), ("ñ", "n")):
+        m = m.replace(a, b)
+    prev = None
+    while prev != m:                       # podar en capas: "dale, limpia el dia porfa."
+        prev = m
+        m = _LIMPIA_BORDES.sub("", m).strip()
+    return m
+
+# Verbo opcional al principio: "poneme", "carga", "cargame", "meteme"...
+_V_PONER = r'(?:pon[eé]?(?:me|le)?|carga(?:me|le)?|met[eé]?(?:me|le)?|anota(?:me)?|marca(?:me)?)'
+
+# ── Gasto: el mensaje entero es el gasto y NADA más ────────────────────────────
+# ✅ "2400 de gasto" · "poneme 2400 de gasto" · "gasto 2400" · "gasto: 2400 kcal"
+# ❌ "poneme 2400 de gasto y cargame el desayuno"  (sobra texto → Claude)
+# ❌ "gaste 2400 hoy, cuanto deficit tengo?"       (es una pregunta → Claude)
+_RE_GASTO = [
+    re.compile(rf'^{_V_PONER}?\s*(\d{{3,5}})\s*(?:kcal|cal|calorias)?\s*(?:de\s+)?gasto$'),
+    re.compile(rf'^{_V_PONER}?\s*(?:el\s+|mi\s+)?gasto\s*(?:en|a|:|=)?\s*(\d{{3,5}})\s*(?:kcal|cal|calorias)?$'),
+]
+
+# ── Día típico COMPLETO ────────────────────────────────────────────────────────
+# ✅ "carga mi dia tipico" · "el dia tipico" · "lo de siempre"
+# ❌ "cargame el dia tipico pero sin la cena"  (tiene excepción → Claude)
+_RE_DIA_TIPICO = re.compile(
+    rf'^{_V_PONER}?\s*(?:el\s+|mi\s+)?(?:dia\s+tipico|lo\s+de\s+siempre|todo\s+el\s+dia)$')
+
+# ── UNA comida típica ──────────────────────────────────────────────────────────
+# ✅ "cargame el desayuno tipico" · "el almuerzo de siempre"
+# ❌ "poneme el desayuno con avena en vez de harina"  (pide un cambio → Claude)
+_COMIDAS = {'desayuno': 'desayuno', 'media manana': 'media_manana',
+            'almuerzo': 'almuerzo', 'merienda': 'merienda', 'cena': 'cena'}
+_RE_COMIDA_TIPICA = re.compile(
+    rf'^{_V_PONER}?\s*(?:el\s+|la\s+|mi\s+)?({"|".join(_COMIDAS)})'
+    r'\s*(?:tipico|tipica|de\s+siempre|habitual|de\s+todos\s+los\s+dias)$')
+
+# ── Limpiar ────────────────────────────────────────────────────────────────────
+# ✅ "limpia el dia" · "borra todo" · "empeza de cero"
+# ❌ "limpia el dia y cargame el desayuno"  (compuesto → Claude)
+_RE_LIMPIAR = re.compile(
+    r'^(?:limpia(?:me|r)?|borra(?:me|r)?|resetea(?:me|r)?|vacia(?:me|r)?|empeza(?:r)?)'
+    r'\s*(?:el\s+|todo\s+el\s+|de\s+)?(?:dia|todo|cero)$')
+
+
+# ⚠️ LECCIÓN (2026-08-13, segunda vuelta) — un atajo que Claude no ve, le corta el hilo.
+# Guión real: "cargame el almuerzo tipico" (atajo, no pasa por Claude) → "no, pechuga de
+# 200 mejor" → Claude, que nunca se enteró del almuerzo, puso la pechuga en el DESAYUNO.
+# El atajo no estaba mal escrito: faltaba contarle lo que había hecho. Por eso todo atajo
+# deja acá su rastro, y el próximo pedido que sí llega a Claude lo lleva como contexto.
+_acciones_atajo = []          # se vacía cuando se lo lleva un pedido a Claude
+
+
 def _atajo_local(msg):
-    """Intenta resolver el mensaje sin Claude. Retorna (reply, True) o (None, False)."""
-    m = msg.lower().strip()
+    """Resuelve el mensaje sin Claude SOLO si es un comando exacto.
 
-    # ── Poner gasto ──
-    # "poneme 2400 de gasto", "gasto 2400", "2400 de gasto", "gasto: 2400"
-    match = re.search(r'(?:gasto|quem[aó])\D*(\d{3,5})', m)
-    if not match:
-        match = re.search(r'(\d{3,5})\s*(?:de\s+)?(?:gasto|kcal?\s*(?:quemad|de\s*gasto|gast))', m)
-    if match:
-        kcal = int(match.group(1))
-        if 100 <= kcal <= 9999:
-            r = poner_gasto(kcal)
-            return f"✅ Gasto: **{kcal} kcal**", True
+    Retorna (reply, True) si lo resolvió, o (None, False) para que vaya a Claude.
+    Ante la mínima duda devuelve False: es más barato esperar 4s que arruinar el día.
+    """
+    m = _normalizar(msg)
+    if not m:
+        return None, False
 
-    # ── Cargar día típico completo ──
-    if re.search(r'(?:carg|pon).{0,15}(?:d[ií]a\s*t[ií]pico|tipico|típico)', m) and \
-       not re.search(r'desayuno|almuerzo|cena|merienda|media', m):
-        r = cargar_dia_tipico()
-        return "✅ Día típico cargado", True
+    # Gasto
+    for rx in _RE_GASTO:
+        mo = rx.match(m)
+        if mo:
+            kcal = int(mo.group(1))
+            if 100 <= kcal <= 9999:          # fuera de rango = probablemente no es gasto
+                poner_gasto(kcal)
+                _acciones_atajo.append(f'Usuario: "{msg}" → puse el gasto en {kcal} kcal.')
+                return f"Gasto: **{kcal} kcal**.", True
+            return None, False
 
-    # ── Cargar comida típica individual ──
-    comidas_map = {
-        'desayuno': 'desayuno', 'media mañana': 'media_manana', 'media manana': 'media_manana',
-        'almuerzo': 'almuerzo', 'merienda': 'merienda', 'cena': 'cena',
-    }
-    for nombre, key in comidas_map.items():
-        if nombre in m and re.search(r'(?:carg|pon|tipic|típic)', m):
-            r = cargar_comida_tipica(key)
-            if "error" not in r:
-                return f"✅ {nombre.capitalize()} típico cargado", True
-            break
+    # Día típico entero
+    if _RE_DIA_TIPICO.match(m):
+        base = _state.get("diaTipicoCustom") or _state.get("diaTipico", {})
+        if not base:
+            return None, False               # sin día típico cargado, que lo explique Claude
+        cargar_dia_tipico()
+        _acciones_atajo.append(f'Usuario: "{msg}" → cargué el día típico completo.')
+        return "Listo, día típico cargado.", True
 
-    # ── Limpiar día ──
-    if re.search(r'(?:limpi|borr|reset|vaciar|poner.{0,5}cero)', m) and \
-       re.search(r'(?:d[ií]a|todo|dia)', m):
-        r = limpiar_dia()
-        return "✅ Día limpiado", True
+    # Una comida típica
+    mo = _RE_COMIDA_TIPICA.match(m)
+    if mo:
+        nombre = mo.group(1)
+        r = cargar_comida_tipica(_COMIDAS[nombre])
+        if "error" in r:
+            return None, False               # que Claude explique por qué no pudo
+        _acciones_atajo.append(
+            f'Usuario: "{msg}" → cargué el {nombre} típico '
+            f'(secciones {nombre}, ninguna otra comida).')
+        return f"Listo, {nombre} típico cargado.", True
 
-    # ── Ver día / cómo voy ──
-    if re.search(r'(?:c[oó]mo\s*voy|ver\s*d[ií]a|resumen|cu[aá]nto|cuantas?\s*cal)', m):
-        r = ver_dia()
-        resumen = _state.get("resumen", {})
-        kcal = resumen.get("kcal", "?")
-        prot = resumen.get("p", "?")
-        gasto = _state.get("gasto", "0")
-        if gasto and gasto != "0":
-            deficit = int(gasto) - (int(kcal) if isinstance(kcal, (int, float)) else 0)
-            return f"📊 **{kcal} kcal** · {prot}g prot · gasto {gasto} · déficit {deficit}", True
-        return f"📊 **{kcal} kcal** · {prot}g prot (sin gasto cargado)", True
-
-    # ── Guardar día ──
-    if re.search(r'guard[aáe]', m) and re.search(r'd[ií]a|dia', m):
-        r = guardar_dia()
-        return "✅ Día marcado para guardar", True
+    # Limpiar
+    if _RE_LIMPIAR.match(m):
+        limpiar_dia()
+        _acciones_atajo.append(f'Usuario: "{msg}" → puse todo el día en cero.')
+        return "Día en cero.", True
 
     return None, False
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# Llamada al Agent SDK
+# Motor: UN proceso `claude` vivo, reusado entre pedidos
 # ═══════════════════════════════════════════════════════════════════════════════
+#
+# Medido el 2026-08-13 (spike_persistente.py) sobre un pedido típico:
+#     arrancar el proceso `claude.exe` .... 6,81 s   ← el 65% del tiempo
+#     inferencia ........................... 4,07 s   ← lo único irreducible
+#
+# `query()` levanta un proceso nuevo por pedido, así que pagaba los 6,81 s SIEMPRE.
+# `ClaudeSDKClient` lo deja vivo: se paga una vez y los pedidos siguientes salen en
+# ~4 s. Es la mejora real de velocidad — y, a diferencia de recortar herramientas o
+# meter atajos con regex, no cuesta ni una gota de inteligencia.
+#
+# Además el proceso conserva la conversación entre pedidos (verificado: un
+# `session_id` nuevo NO la aísla), así que "no, eso no" o "agregale queso" entienden
+# a qué se refieren sin reenviar el historial en cada vuelta.
 
-async def llamar_claude(prompt, system_prompt, modelo="claude-haiku-4-5-20251001"):
-    """Ejecuta una conversación completa con Claude vía Agent SDK + MCP tools."""
-    from claude_agent_sdk import query, ClaudeAgentOptions
-    from claude_agent_sdk.types import SystemMessage, AssistantMessage, TextBlock, ResultMessage
+import hashlib
+import threading
+import queue as _queue
 
-    opts = ClaudeAgentOptions(
-        model=modelo,
-        system_prompt=system_prompt,
-        mcp_servers={
-            "mdn": {
-                "type": "sdk",
-                "name": "mdn-tools",
-                "instance": mcp._mcp_server,
-            }
-        },
-        tools=[],                    # sin herramientas built-in del CLI
-        setting_sources=[],          # no cargar CLAUDE.md ni settings
-        permission_mode="bypassPermissions",
-        max_turns=4,
-        effort="low",
-    )
+# El loop de asyncio vive en un hilo propio y NO muere entre pedidos: es lo que
+# mantiene vivo al subproceso del SDK. Flask (sync, multihilo) le manda trabajo.
+class _MotorClaude:
+    """Dueño del proceso `claude`. Serializa los pedidos y se recupera solo si muere."""
 
-    texto_final = []
-    api_key_source = None
-    model_usado = None
+    # Reciclar cada tantos pedidos: la conversación acumulada crece y encarece cada
+    # vuelta. 40 da charla larga sin que el contexto se vaya de las manos.
+    MAX_PEDIDOS = 40
 
-    async for msg in query(prompt=prompt, options=opts):
-        if isinstance(msg, SystemMessage):
-            data = msg.data or {}
-            if data.get("subtype") == "init":
-                api_key_source = data.get("apiKeySource")
-                model_usado = data.get("model")
-                log.info(f"[SDK init] apiKeySource={api_key_source} model={model_usado}")
-                # PASO 3: assert anti-facturación
-                if api_key_source in FACTURABLES:
-                    raise RuntimeError(
-                        f"ABORTADO: apiKeySource={api_key_source} → facturaría por API."
-                        " Correr `claude auth login` y verificar la suscripción Max."
-                    )
-        if isinstance(msg, AssistantMessage):
-            for b in msg.content:
-                if isinstance(b, TextBlock):
-                    texto_final.append(b.text)
+    def __init__(self):
+        self._loop = None
+        self._hilo = None
+        self._listo = threading.Event()
+        self._lock = threading.Lock()      # un pedido por vez (el CLI es una sola conversación)
+        self._client = None
+        self._firma = None                 # (modelo, hash del prompt base)
+        self._conv_id = None               # id de conversación del front
+        self._pedidos = 0
+        self._arrancar_loop()
 
-    return "\n".join(texto_final).strip() or "(listo)"
+    # ── infraestructura ────────────────────────────────────────────────────────
+    def _arrancar_loop(self):
+        def correr():
+            self._loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(self._loop)
+            self._listo.set()
+            self._loop.run_forever()
+        self._hilo = threading.Thread(target=correr, daemon=True, name="motor-claude")
+        self._hilo.start()
+        self._listo.wait(timeout=10)
+
+    def _correr(self, coro, timeout):
+        fut = asyncio.run_coroutine_threadsafe(coro, self._loop)
+        return fut.result(timeout=timeout)
+
+    # ── ciclo de vida del cliente ──────────────────────────────────────────────
+    async def _abrir(self, modelo, prompt_base):
+        from claude_agent_sdk import ClaudeSDKClient, ClaudeAgentOptions
+        opts = ClaudeAgentOptions(
+            model=modelo,
+            system_prompt=prompt_base,
+            mcp_servers={"mdn": {"type": "sdk", "name": "mdn-tools",
+                                 "instance": mcp._mcp_server}},
+            # El prompt le pide abrir links y buscar datos oficiales de marcas: sin
+            # estas dos, esa instrucción era letra muerta y estimaba a ojo.
+            tools=["WebSearch", "WebFetch"],
+            setting_sources=[],            # no cargar CLAUDE.md ni settings del usuario
+            permission_mode="bypassPermissions",
+            max_turns=8,
+            effort="low",
+        )
+        c = ClaudeSDKClient(options=opts)
+        await c.connect()
+        return c
+
+    async def _cerrar(self, client):
+        try:
+            await client.disconnect()
+        except Exception:
+            pass
+
+    async def _asegurar(self, modelo, prompt_base, conv_id):
+        """Devuelve un cliente conectado, reciclándolo si cambió algo o se gastó."""
+        firma = (modelo, hashlib.sha1(prompt_base.encode("utf-8")).hexdigest())
+        motivo = None
+        if self._client is None:
+            motivo = "primer pedido"
+        elif firma != self._firma:
+            motivo = "cambió el modelo o el catálogo"
+        elif conv_id and conv_id != self._conv_id:
+            motivo = "conversación nueva"
+        elif self._pedidos >= self.MAX_PEDIDOS:
+            motivo = f"{self._pedidos} pedidos acumulados"
+
+        if motivo:
+            if self._client is not None:
+                log.info(f"[motor] reciclando el proceso: {motivo}")
+                await self._cerrar(self._client)
+                self._client = None
+            t0 = datetime.now()
+            self._client = await self._abrir(modelo, prompt_base)
+            self._firma, self._conv_id, self._pedidos = firma, conv_id, 0
+            log.info(f"[motor] proceso nuevo listo en {(datetime.now()-t0).total_seconds():.1f}s"
+                     f" (modelo={modelo})")
+        return self._client
+
+    # ── un pedido ──────────────────────────────────────────────────────────────
+    async def _pedir(self, client, prompt, imagenes=None):
+        from claude_agent_sdk.types import (SystemMessage, AssistantMessage,
+                                            TextBlock, ResultMessage)
+        if imagenes:
+            # Con imágenes hay que mandar el mensaje entero como bloques (igual que la
+            # API). El prompt de la app promete leer etiquetas nutricionales y fotos de
+            # platos: antes se descartaban en silencio y el modelo estimaba a ciegas.
+            bloques = [{"type": "image",
+                        "source": {"type": "base64",
+                                   "media_type": im.get("media", "image/jpeg"),
+                                   "data": im.get("b64", "")}}
+                       for im in imagenes if im.get("b64")]
+            bloques.append({"type": "text", "text": prompt})
+
+            async def stream():
+                yield {"type": "user",
+                       "message": {"role": "user", "content": bloques},
+                       "parent_tool_use_id": None,
+                       "session_id": "default"}
+            await client.query(stream())
+        else:
+            await client.query(prompt)
+        texto, herramientas = [], []
+        async for msg in client.receive_response():
+            if isinstance(msg, SystemMessage):
+                d = msg.data or {}
+                if d.get("subtype") == "init":
+                    fuente = d.get("apiKeySource")
+                    # PASO 3 del patrón MAX BRIDGE: assert anti-facturación
+                    if fuente in FACTURABLES:
+                        raise RuntimeError(
+                            f"ABORTADO: apiKeySource={fuente} → facturaría por API."
+                            " Correr `claude auth login` y verificar la suscripción Max.")
+            elif isinstance(msg, AssistantMessage):
+                for b in msg.content:
+                    if isinstance(b, TextBlock):
+                        texto.append(b.text)
+                    elif type(b).__name__ == "ToolUseBlock":
+                        herramientas.append(getattr(b, "name", "?").replace("mcp__mdn__", ""))
+            elif isinstance(msg, ResultMessage):
+                break
+        return "\n".join(texto).strip(), herramientas
+
+    def preguntar(self, prompt, modelo, prompt_base, conv_id=None, imagenes=None,
+                  timeout=180):
+        """API sincrónica para Flask. Serializa y reintenta una vez si el proceso murió."""
+        with self._lock:
+            for intento in (1, 2):
+                try:
+                    client = self._correr(self._asegurar(modelo, prompt_base, conv_id),
+                                          timeout=90)
+                    texto, tools = self._correr(self._pedir(client, prompt, imagenes),
+                                                timeout=timeout)
+                    self._pedidos += 1
+                    return texto or "(listo)", tools
+                except RuntimeError:
+                    raise                       # anti-facturación: no reintentar
+                except Exception as e:
+                    if intento == 2:
+                        raise
+                    # El proceso pudo morir (sesión vieja, CLI actualizado, etc.):
+                    # tirarlo y rearmar. Un reintento, no un bucle.
+                    log.warning(f"[motor] pedido falló ({type(e).__name__}: {e}); "
+                                f"rearmo el proceso y reintento")
+                    if self._client is not None:
+                        try:
+                            self._correr(self._cerrar(self._client), timeout=15)
+                        except Exception:
+                            pass
+                    self._client = None
+
+    def estado(self):
+        return {"vivo": self._client is not None, "pedidos": self._pedidos,
+                "modelo": self._firma[0] if self._firma else None}
+
+
+_motor = _MotorClaude()
+
+
+def _partir_prompt(system_prompt):
+    """Separa la parte ESTABLE del prompt (reglas + catálogo) de la volátil.
+
+    El estado del día y la memoria cambian en cada pedido; si fueran al system prompt
+    obligarían a rearmar el proceso cada vez y no habría persistencia posible. Van
+    dentro del mensaje. El corte es donde el front pega el estado.
+    """
+    for marca in ("\n\nEstado actual del dia:", "\n\nEstado actual del día:"):
+        i = system_prompt.find(marca)
+        if i != -1:
+            return system_prompt[:i], system_prompt[i:].strip()
+    return system_prompt, ""
+
+
+def _prompt_del_pedido(mensaje, volatil, historial, sembrar):
+    """Arma el mensaje: estado fresco + lo que hicieron los atajos + historial + pedido."""
+    partes = []
+    if volatil:
+        partes.append(volatil)
+
+    # Lo que resolvieron los atajos desde el último pedido a Claude. Sin esto, el
+    # modelo no se entera de esas vueltas y responde fuera de contexto (ver lección
+    # arriba de _atajo_local).
+    if _acciones_atajo:
+        partes.append("=== HECHO DESDE TU ÚLTIMA RESPUESTA (resuelto por la app, sin vos) ===\n"
+                      + "\n".join(_acciones_atajo)
+                      + "\n=== FIN ===")
+        _acciones_atajo.clear()
+
+    # El proceso conserva la charla entre pedidos, así que el historial solo hace
+    # falta cuando se acaba de crear (arranque, reciclado, o recarga de la página).
+    if sembrar and historial:
+        lineas = []
+        for m in historial[-12:]:
+            rol = "Usuario" if m.get("role") == "user" else "Asistente"
+            txt = (m.get("text") or "").strip()
+            if txt:
+                lineas.append(f"{rol}: {txt}")
+        if lineas:
+            partes.append("=== CONVERSACIÓN PREVIA ===\n" + "\n".join(lineas) + "\n=== FIN ===")
+
+    partes.append(mensaje)
+    return "\n\n".join(partes)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -438,7 +682,39 @@ def pwa_file(filename):
 @app.route("/status", methods=["GET"])
 def status():
     """Health check rápido para que el front sepa si el bridge está vivo."""
-    return jsonify({"ok": True, "version": "1.0.0", "port": PORT})
+    return jsonify({"ok": True, "version": "2.0.0", "port": PORT,
+                    "motor": _motor.estado()})
+
+
+@app.route("/warmup", methods=["POST"])
+def warmup():
+    """Arranca el proceso `claude` de fondo, apenas la app abre.
+
+    Arrancarlo cuesta ~6,8 s. Si esperáramos al primer mensaje, ese mensaje tardaría
+    ~11 s y el resto ~4 s — justo la primera impresión es la peor. Pidiéndolo acá, el
+    proceso ya está listo cuando el usuario termina de escribir.
+    """
+    try:
+        data = flask_request.get_json(force=True) or {}
+    except Exception:
+        data = {}
+    modelo = data.get("model", "claude-haiku-4-5-20251001")
+    prompt_base, _ = _partir_prompt(data.get("systemPrompt", ""))
+    if not prompt_base.strip():
+        return jsonify({"ok": False, "motivo": "sin systemPrompt"}), 400
+
+    def calentar():
+        try:
+            t0 = datetime.now()
+            with _motor._lock:
+                _motor._correr(_motor._asegurar(modelo, prompt_base, data.get("convId")),
+                               timeout=90)
+            log.info(f"[warmup] proceso listo en {(datetime.now()-t0).total_seconds():.1f}s")
+        except Exception as e:
+            log.warning(f"[warmup] falló: {e}")
+
+    threading.Thread(target=calentar, daemon=True, name="warmup").start()
+    return jsonify({"ok": True, "calentando": True})
 
 
 @app.route("/chat", methods=["POST"])
@@ -450,12 +726,17 @@ def chat():
         return jsonify({"error": "JSON inválido"}), 400
 
     mensaje = data.get("message", "").strip()
-    if not mensaje:
+    imagenes = data.get("images", []) or []
+    if not mensaje and not imagenes:
         return jsonify({"error": "message vacío"}), 400
+    if imagenes and not mensaje:
+        mensaje = "¿Qué ves en esta imagen? Cargá lo que corresponda."
 
     estado = data.get("state", {})
     modelo = data.get("model", "claude-haiku-4-5-20251001")
     system_prompt = data.get("systemPrompt", "")
+    historial = data.get("history", []) or []
+    conv_id = data.get("convId") or None
 
     # ── Inicializar el estado para esta request ──
     with _state_lock:
@@ -472,21 +753,29 @@ def chat():
         _state["_guardar"] = False
 
     t0 = datetime.now()
+    herramientas = []
 
-    # ── Atajos locales: resolver sin Claude si es un comando obvio ──
-    atajo_reply, fue_atajo = _atajo_local(mensaje)
+    # ── Atajo: solo si el mensaje ES el comando entero (ver _atajo_local) ──
+    # Con imagen nunca hay atajo: hay que mirarla.
+    reply, fue_atajo = (None, False) if imagenes else _atajo_local(mensaje)
     if fue_atajo:
-        reply = atajo_reply
-        duracion = (datetime.now() - t0).total_seconds()
-        log.info(f"[ATAJO] {duracion:.3f}s | msg={mensaje[:60]}")
+        log.info(f"[ATAJO] {(datetime.now()-t0).total_seconds():.3f}s | {mensaje[:60]}")
     else:
+        prompt_base, volatil = _partir_prompt(system_prompt)
+        # Si el proceso se va a rearmar, hay que reponerle la charla previa.
+        sembrar = _motor.estado()["pedidos"] == 0 or conv_id != _motor._conv_id
+        prompt = _prompt_del_pedido(mensaje, volatil, historial, sembrar)
         try:
-            reply = asyncio.run(llamar_claude(mensaje, system_prompt, modelo))
+            reply, herramientas = _motor.preguntar(prompt, modelo, prompt_base, conv_id,
+                                                   imagenes=imagenes)
         except Exception as e:
-            log.error(f"Error en llamar_claude: {e}\n{traceback.format_exc()}")
+            log.error(f"Error hablando con Claude: {e}\n{traceback.format_exc()}")
             return jsonify({"error": str(e)}), 500
-        duracion = (datetime.now() - t0).total_seconds()
-        log.info(f"[chat] {duracion:.1f}s | modelo={modelo} | msg={mensaje[:60]}")
+        log.info(f"[chat] {(datetime.now()-t0).total_seconds():.1f}s | modelo={modelo}"
+                 f"{f' | {len(imagenes)} img' if imagenes else ''}"
+                 f" | tools={herramientas or '-'} | {mensaje[:60]}")
+
+    duracion = (datetime.now() - t0).total_seconds()
 
     # ── Devolver el estado modificado por las herramientas ──
     with _state_lock:
@@ -502,6 +791,8 @@ def chat():
         "reply": reply,
         "state": nuevo_estado,
         "duracion": round(duracion, 1),
+        "atajo": fue_atajo,
+        "tools": herramientas,
     })
 
 

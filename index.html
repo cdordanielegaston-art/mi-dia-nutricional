@@ -1024,6 +1024,10 @@ function App() {
     try { return localStorage.getItem(BRIDGE_URL_STORAGE) || ''; } catch(e){ return ''; }
   });
   const [bridgeOk, setBridgeOk] = useState(false); // true si el bridge responde
+  // Id de esta conversacion: si cambia, el bridge rearma su proceso y arranca limpio.
+  // Se renueva al recargar la pagina y al limpiar el chat, para que los dos lados
+  // (lo que se ve y lo que el proceso recuerda) nunca queden contando historias distintas.
+  const convIdRef = useRef('c' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8));
   const [showGastoIA, setShowGastoIA] = useState(false);
   const [gastoIA, setGastoIA] = useState(() => { try { const r = localStorage.getItem(GASTO_STORAGE); return r ? JSON.parse(r) : {}; } catch(e){ return {}; } });
   const [preciosIA, setPreciosIA] = useState(() => { try { const r = localStorage.getItem(PRECIOS_STORAGE); return r ? JSON.parse(r) : PRECIOS_DEFAULT; } catch(e){ return PRECIOS_DEFAULT; } });
@@ -1072,6 +1076,17 @@ function App() {
             if (chatModel === MODELO_INICIAL || chatModel.indexOf('gemini') === 0) {
               setChatModel('bridge-haiku');
             }
+            // Precalentar: arrancar el proceso `claude` cuesta ~7s. Pidiendolo ahora,
+            // en vez de con el primer mensaje, ese mensaje sale en ~4s y no en ~11s.
+            fetch(u + '/warmup', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                model: BRIDGE_MODELS[chatModel] || 'claude-haiku-4-5-20251001',
+                systemPrompt: chatSystemPrompt(),
+                convId: convIdRef.current,
+              }),
+            }).catch(() => {});   // si falla, el primer mensaje simplemente tarda mas
             return;
           }
         } catch(e) { /* sigue con la siguiente */ }
@@ -1209,14 +1224,24 @@ function App() {
   // El bridge ejecuta las herramientas en el servidor y devuelve el estado nuevo.
   // UNA sola llamada = toda la conversación resuelta, sin viajes extra.
   const runBridge = async (uiMsgs) => {
-    // Solo mandamos el ultimo mensaje del usuario (el bridge no mantiene historial)
     const ultimo = uiMsgs[uiMsgs.length - 1];
     const modeloReal = BRIDGE_MODELS[chatModel] || 'claude-haiku-4-5-20251001';
     const url = bridgeUrl + '/chat';
+    // El bridge mantiene la charla viva en su proceso, pero si lo tiene que rearmar
+    // (arranque, cambio de modelo, recarga de la pagina) necesita el historial para
+    // que "no, eso no" o "agregale queso" sigan entendiendose.
+    const historial = uiMsgs.slice(0, -1).filter(m => m.text).map(m => ({
+      role: m.role, text: m.text
+    }));
     const body = {
       message: ultimo.text || '',
       model: modeloReal,
       systemPrompt: chatSystemPrompt(),
+      history: historial,
+      convId: convIdRef.current,
+      // Etiquetas nutricionales, fotos de platos, capturas de otras apps: el prompt
+      // le pide leerlas, asi que hay que mandarlas (antes se descartaban en silencio).
+      images: (ultimo.imgs || []).map(im => ({ media: im.media, b64: im.b64 })),
       state: {
         sel: { ...liveRef.current.sel },
         gasto: liveRef.current.gastoWhoop || '0',
@@ -1230,7 +1255,9 @@ function App() {
       },
     };
     const ctrl = new AbortController();
-    const reloj = setTimeout(() => ctrl.abort(), 30000);
+    // 30s cortaba justo los pedidos que mas valen: buscar los macros oficiales de una
+    // marca (WebSearch/WebFetch) o rearmar el proceso. 120s cubre el peor caso real.
+    const reloj = setTimeout(() => ctrl.abort(), 120000);
     let resp;
     try {
       resp = await fetch(url, {
@@ -2346,7 +2373,7 @@ function App() {
                 ))}
               </select>
               <button className="btn" onClick={() => setShowChatCfg(!showChatCfg)} title="API key" style={{ background: "transparent", border: "1px solid #1A2744", borderRadius: 6, color: (anthropicKey || geminiKey || geminiKeyPago || apiKey) ? "#00E5A0" : "#FF8C42", padding: "5px 9px", fontSize: 13 }}>⚙️</button>
-              {chatMsgs.length > 0 && <button className="btn" onClick={() => setChatMsgs([])} title="Limpiar chat" style={{ background: "transparent", border: "1px solid #1A2744", borderRadius: 6, color: "#8899BB", padding: "5px 9px", fontSize: 13 }}>🗑</button>}
+              {chatMsgs.length > 0 && <button className="btn" onClick={() => { setChatMsgs([]); convIdRef.current = 'c' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8); }} title="Limpiar chat" style={{ background: "transparent", border: "1px solid #1A2744", borderRadius: 6, color: "#8899BB", padding: "5px 9px", fontSize: 13 }}>🗑</button>}
             </div>
             {/* Aviso solo cuando elegis el inestable: que no haya que abrir el ⚙️ para enterarse */}
             {chatModel === 'gemini-3.6-flash' && (
