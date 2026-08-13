@@ -1,13 +1,14 @@
 # Mi Día Nutricional — notas del proyecto
 
 App PWA de un solo archivo (`index.html`, React por CDN) que corre en la PC y en el celu.
-Sincroniza entre dispositivos por un webhook de n8n. **No tiene backend propio.**
+Sincroniza entre dispositivos por un webhook de n8n.
 
 ## Piezas
 
 | Pieza | Dónde |
 |---|---|
-| App | `index.html` (v27) — abrir con doble clic o desde el celu |
+| App | `index.html` (v43) — abrir con doble clic o desde el celu |
+| **Bridge** | `mdn_bridge.py` — backend Flask que conecta con la suscripción Max ($0 API) |
 | Sync | n8n Cloud: workflow **`Mi Dia Nutricional - Sync`**, ID `TQDi7FTn8YUU1YYR` |
 | Webhook | `https://ecddaniele.app.n8n.cloud/webhook/mdn-sync` |
 | Payload | `POST {op:"get"\|"set", code:<código de sync>, data:<json>}`, `Content-Type: text/plain` (evita el preflight CORS) |
@@ -112,3 +113,27 @@ más un aviso naranja que aparece solo al elegir el Flash errático.
   usar `curl --ssl-no-revoke` (Git Bash usa Schannel, no OpenSSL).
 - **El editor de n8n congela el renderer del navegador** al abrir el canvas del workflow. Para operar
   n8n desde automatización, usar la API REST, no la UI.
+
+## MDN Bridge (2026-08-13)
+
+Backend que conecta la app con la **suscripción Claude Max** ($0 API) vía **Agent SDK**.
+
+| Aspecto | Detalle |
+|---|---|
+| Archivo | `mdn_bridge.py` |
+| Puerto | **8793** (8792 ocupado por SPEED) |
+| Patrón | MAX BRIDGE obligatorio (ver `apps ECD\MAX BRIDGE\CLAUDE.md`) |
+| MCP tools | 11 herramientas (agregar/quitar comida, cargar día típico, gasto, etc.) |
+| Modelos | `bridge-haiku` (Haiku 4.5) y `bridge-sonnet` (Sonnet 4.6) |
+| Acceso celular | Tailscale `http://100.110.55.41:8793/` |
+| Mixed content | Resuelto: el bridge sirve la PWA en `/` → mismo origen |
+| Arranque | `python mdn_bridge.py` con `CreateNoWindow` (NO usar `pythonw`, muere mudo) |
+
+**Cómo se usa desde el celular:**
+1. Bridge corriendo en la PC (`python mdn_bridge.py`)
+2. Celular abre `http://100.110.55.41:8793/` (Tailscale) — la app carga desde el bridge
+3. Todo es mismo origen → sin CORS, sin mixed content
+4. El chat auto-detecta el bridge y selecciona Haiku gratis
+
+**pythonw NO funciona** — muere antes de que `logging.basicConfig` cree el `StreamHandler(sys.stderr)`,
+porque `sys.stderr` es `None`. Usar `python.exe` + `CreateNoWindow` en su lugar.
