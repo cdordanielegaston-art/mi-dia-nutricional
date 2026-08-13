@@ -1053,11 +1053,16 @@ function App() {
   // Bridge: guardar URL y detectar disponibilidad al arrancar
   useEffect(() => { if (bridgeUrl) try { localStorage.setItem(BRIDGE_URL_STORAGE, bridgeUrl); } catch(e){} }, [bridgeUrl]);
   useEffect(() => {
-    // Probar todas las URLs default hasta encontrar una que responda
+    // Desde HTTPS (GitHub Pages) no se puede hacer fetch a HTTP (mixed content).
+    // El bridge solo funciona cuando la app se carga desde el bridge mismo (mismo origen).
+    const esHttps = location.protocol === 'https:';
     const urls = bridgeUrl ? [bridgeUrl, ...BRIDGE_URLS_DEFAULT.filter(u => u !== bridgeUrl)] : BRIDGE_URLS_DEFAULT;
+    // En HTTPS, solo probar '' (mismo origen) — las http:// van a fallar por mixed content
+    const urlsFiltradas = esHttps ? urls.filter(u => !u.startsWith('http:')) : urls;
+    if (!urlsFiltradas.length) { setBridgeOk(false); return; }
     let cancelado = false;
     (async () => {
-      for (const u of urls) {
+      for (const u of urlsFiltradas) {
         try {
           const r = await fetch(u + '/status', { signal: AbortSignal.timeout(3000) });
           if (r.ok && !cancelado) {
@@ -1442,7 +1447,10 @@ function App() {
       : prov === 'google' ? (mod.pago ? geminiKeyPago : geminiKey)
       : apiKey;
     if (prov === 'bridge' && !bridgeOk) {
-      setChatErr('El bridge no está disponible. ¿Está corriendo mdn_bridge.py en la PC? ¿Tailscale está conectado?');
+      const esHttps = location.protocol === 'https:';
+      setChatErr(esHttps
+        ? 'Desde HTTPS no se puede conectar al bridge (mixed content). Abrí la app desde el bridge: http://localhost:8793/ (PC) o http://100.110.55.41:8793/ (celular con Tailscale).'
+        : 'El bridge no está disponible. ¿Está corriendo mdn_bridge.py en la PC? ¿Tailscale está conectado?');
       return;
     }
     if (prov !== 'bridge' && !key.trim()) {
