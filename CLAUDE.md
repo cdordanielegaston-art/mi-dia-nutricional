@@ -196,6 +196,38 @@ Arreglo: `bajar_vendor.ps1` las deja en `vendor/` y el bridge las sirve con gzip
 al servirlo** (`VENDOR_LOCAL`): un solo archivo, sin duplicar. Si falta un vendor, esa librería
 queda en el CDN y el log lo avisa. `vendor/` no va al repo: correr `bajar_vendor.ps1` en cada PC.
 
+## ⚠️ LECCIÓN (2026-08-14) — "está lento" era el modelo haciendo trabajo de más, y mal
+
+**ERROR.** Un pedido tardó **44,2 s** y Gastón lo reportó como lentitud. Tres hipótesis mías
+—Sonnet es lento, la charla acumulada pesa, el prompt es grande— **las tres dieron NO** al medirlas
+(Sonnet 12,8 s, degradación 0,90×, Haiku 13,3 s con el prompt real). La respuesta estaba en el log:
+
+```
+[stream] 44.2s | Sonnet | tools=['poner_gasto', 'cargar_comida_tipica',
+                  'seleccionar_opcion', 'agregar_comida_libre', 'guardar_dia']
+```
+
+**5 herramientas, y 2 sobraban:** `guardar_dia` —que el prompt PROHÍBE sin pedido explícito— le
+archivó el día solo, y `agregar_comida_libre` cargó la manzana **de nuevo** cuando
+`seleccionar_opcion` ya había puesto "20g almendras + 1 fruta". Cada herramienta es una ida y vuelta
+al modelo: **el trabajo de más ERA la lentitud**, y encima ensuciaba el día.
+
+**CAUSA RAÍZ.** La instrucción estaba escrita en el system prompt y el modelo la desobedeció igual.
+**Una acción que toca el historial no puede depender de que el modelo obedezca una frase.**
+
+**REGLA.**
+- **Gate determinístico sobre toda acción con consecuencias** (archivar, borrar, plata). `guardar_dia`
+  ahora verifica contra `_state["_mensaje"]` —lo que el usuario escribió textualmente— y si no lo
+  pidió, **devuelve error y le dice al modelo que siga con lo demás**. El prompt pide; el código
+  garantiza. Es el mismo criterio que la regla global de determinismo.
+- **Cuando el usuario dice "está lento", mirar QUÉ HIZO, no solo cuánto tardó.** El log con la lista
+  de herramientas resolvió en 30 segundos lo que tres tandas de mediciones no habían encontrado.
+  Por eso `[chat]`/`[stream]` loguean siempre las tools.
+- **Un tiempo alto suele ser trabajo de más, no lentitud del modelo.**
+
+**Resultado:** 44,2 s → **10,3 s**, 3 herramientas en vez de 5, sin guardar de prepo y sin duplicar
+la fruta. Comprobado con el pedido textual de la captura: `tests/test_gate_guardar.py`.
+
 ## ⚠️ LECCIÓN (2026-08-13) — optimicé por el camino fácil y le saqué la mitad de la app
 
 **ERROR.** Ante "está muy lento", metí atajos con regex para saltear a Claude. Bajó a 0,3 s y

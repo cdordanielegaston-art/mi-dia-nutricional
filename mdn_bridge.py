@@ -25,6 +25,7 @@ _AUTH_VARS = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_USE_BEDR
 for _v in _AUTH_VARS:
     os.environ.pop(_v, None)
 
+import re
 import sys
 import json
 import shutil
@@ -41,10 +42,13 @@ from threading import Lock
 AQUI = Path(__file__).resolve().parent
 LOG_DIR = AQUI / "logs"
 LOG_DIR.mkdir(exist_ok=True)
+ARCHIVO_LOG = LOG_DIR / f"bridge_{datetime.now():%Y-%m-%d}.log"
+_STDERR_ES_EL_LOG = False
 if sys.executable.lower().endswith("pythonw.exe") or sys.stderr is None:
-    _fallback = open(LOG_DIR / f"bridge_{datetime.now():%Y-%m-%d}.log", "a", encoding="utf-8")
+    _fallback = open(ARCHIVO_LOG, "a", encoding="utf-8")
     sys.stderr = _fallback
     sys.stdout = _fallback
+    _STDERR_ES_EL_LOG = True
 
 # ── Silenciar consolas de hijos (el SDK spawnea el CLI) ──────────────────────
 if sys.platform == "win32":
@@ -63,14 +67,16 @@ PUERTO_REAL = [PORT]        # el que realmente se abrió, para que /status no mi
 FACTURABLES = ("user", "project", "org", "temporary")
 
 # ── Logging ──────────────────────────────────────────────────────────────────
+# Bajo pythonw, stderr YA es el archivo de log: sumarle el StreamHandler escribía
+# cada línea dos veces (y duplicaba el tamaño del log).
+_handlers = [logging.FileHandler(ARCHIVO_LOG, encoding="utf-8")]
+if not _STDERR_ES_EL_LOG:
+    _handlers.append(logging.StreamHandler())
 logging.basicConfig(
     level=logging.INFO,
     format="[%(asctime)s] %(levelname)s %(message)s",
     datefmt="%H:%M:%S",
-    handlers=[
-        logging.FileHandler(LOG_DIR / f"bridge_{datetime.now():%Y-%m-%d}.log", encoding="utf-8"),
-        logging.StreamHandler()
-    ]
+    handlers=_handlers,
 )
 log = logging.getLogger("mdn_bridge")
 
@@ -126,6 +132,9 @@ _state = {
     "_cat_lookup": {},
     # Flags que setean las herramientas para que el bridge los devuelva al front
     "_guardar": False,
+    # El mensaje del usuario, textual: contra esto se validan las acciones que
+    # tocan el historial (ver el gate de guardar_dia).
+    "_mensaje": "",
 }
 
 
@@ -262,9 +271,27 @@ def quitar_comida_libre(descripcion: str) -> dict:
     return {"error": f"no encontré una comida libre que coincida con: {descripcion}"}
 
 
+# Frases con las que SÍ se está pidiendo archivar el día.
+_RE_PIDE_GUARDAR = re.compile(
+    r'\b(guard[aáeé]\w*|archiv\w+|cerr[aáeé]\s*(el\s+)?d[ií]a|dale\s+guardar)\b', re.I)
+
+
 @mcp.tool()
 def guardar_dia() -> dict:
-    """Guarda/archiva el día actual en el historial."""
+    """Guarda/archiva el día actual en el historial.
+
+    SOLO si el usuario lo pidió explícitamente ("guardá el día", "archivalo").
+    """
+    # ⚠️ Gate determinístico (2026-08-14). El prompt ya decía "NUNCA uses guardar_dia
+    # salvo que te lo pidan explícitamente" y el modelo lo hizo igual: con
+    # "700, desayuno típico, media mañana: 20 almendras y 1 fruta (manzana);" archivó
+    # el día solo. Una acción que toca el historial no puede depender de que el modelo
+    # obedezca una instrucción: se verifica contra lo que el usuario realmente escribió.
+    pedido = _state.get("_mensaje", "")
+    if not _RE_PIDE_GUARDAR.search(pedido):
+        return {"error": "El usuario NO pidió guardar el día, así que no lo guardé. "
+                         "Seguí con lo que sí pidió y no vuelvas a llamar esta "
+                         "herramienta salvo que lo diga con todas las letras."}
     _state["_guardar"] = True
     return {"ok": True, "mensaje": "Marcado para guardar (el front lo archiva)"}
 
@@ -309,8 +336,6 @@ def olvidar(texto: str) -> dict:
 #
 # Tampoco hay atajo para "cómo voy" ni "guardá": piden matiz (análisis, confirmar
 # qué se archiva) y una plantilla fija ahí se lee como que el asistente se volvió tonto.
-
-import re
 
 # Ruido que puede envolver un comando sin cambiar su significado
 _CORTESIA = r'(?:por\s+favor|porfa|dale|che|ok|listo|gracias|ahora|ya)'
@@ -612,7 +637,15 @@ class _MotorClaude:
                                         "state": _instantanea_estado()})
             elif isinstance(msg, ResultMessage):
                 break
-        return "\n".join(texto).strip(), herramientas
+
+        # Con varias herramientas el modelo va comentando entre vuelta y vuelta
+        # ("Arranco todo junto!", "Falta guardar!") y pegarlo todo daba una respuesta
+        # con relato de trámite adentro. Lo que el usuario quiere leer es el cierre:
+        # se devuelve el último bloque si por sí solo dice algo.
+        limpios = [t.strip() for t in texto if t.strip()]
+        if len(limpios) > 1 and len(limpios[-1]) >= 25:
+            return limpios[-1], herramientas
+        return "\n".join(limpios).strip(), herramientas
 
     def preguntar(self, prompt, modelo, prompt_base, conv_id=None, imagenes=None,
                   timeout=180):
@@ -889,6 +922,9 @@ def _preparar(data):
         _state["catalogo"] = estado.get("catalogo", "")
         _state["_cat_lookup"] = _parse_catalogo(_state["catalogo"])
         _state["_guardar"] = False
+        # Lo que escribió el usuario, tal cual: es contra esto que se valida
+        # guardar_dia, no contra lo que el modelo crea que le pidieron.
+        _state["_mensaje"] = mensaje
 
     prompt_base, volatil = _partir_prompt(data.get("systemPrompt", ""))
     conv_id = data.get("convId") or None
