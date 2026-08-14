@@ -196,6 +196,31 @@ Arreglo: `bajar_vendor.ps1` las deja en `vendor/` y el bridge las sirve con gzip
 al servirlo** (`VENDOR_LOCAL`): un solo archivo, sin duplicar. Si falta un vendor, esa librería
 queda en el CDN y el log lo avisa. `vendor/` no va al repo: correr `bajar_vendor.ps1` en cada PC.
 
+## ⚠️ CONVENCIONES DE GASTÓN (no están en el código: solo las sabe él)
+
+| Escribe | Significa |
+|---|---|
+| **`;` al final** | **guardar el día** — `"700, desayuno típico, media mañana: 20 almendras;"` |
+| lista separada por comas | varias acciones en un mensaje (así carga el día entero) |
+
+Viven en `_RE_PIDE_GUARDAR` y en `_atajo_compuesto`. **Si aparece otra, va acá y a la auto-memoria
+`feedback-convenciones-del-usuario`.**
+
+## ⚠️ LECCIÓN (2026-08-14) — di por error algo que era una convención suya
+
+**ERROR.** El asistente llamaba `guardar_dia` con `"700, desayuno típico, ...;"`. Como el prompt dice
+"NUNCA guardes sin pedido explícito", lo declaré desobediencia y puse un gate que lo bloqueaba.
+Gastón: *"; significa guardar día"*. **El modelo hacía lo correcto y yo le rompí algo que usa a diario.**
+
+**CAUSA RAÍZ.** Vi un comportamiento que no encajaba con MI modelo del sistema y asumí que el
+sistema estaba mal. No se me ocurrió que respondiera a una regla del usuario que yo no conocía.
+
+**REGLA.** Antes de bloquear algo que parece un error, preguntarse **si es una convención del
+usuario** — sobre todo si el modelo lo hace de forma consistente. Y todo gate determinístico sobre
+acciones con consecuencias tiene que **dejar puerta a lo que el usuario definió**: `guardar_dia`
+acepta el `;`, las palabras explícitas, y se corre solo si la memoria del asistente menciona una
+convención de guardado (ahí el que sabe interpretarla es el modelo, no mi regex).
+
 ## ⚠️ LECCIÓN (2026-08-14) — "está lento" era el modelo haciendo trabajo de más, y mal
 
 **ERROR.** Un pedido tardó **44,2 s** y Gastón lo reportó como lentitud. Tres hipótesis mías
@@ -225,8 +250,25 @@ al modelo: **el trabajo de más ERA la lentitud**, y encima ensuciaba el día.
   Por eso `[chat]`/`[stream]` loguean siempre las tools.
 - **Un tiempo alto suele ser trabajo de más, no lentitud del modelo.**
 
-**Resultado:** 44,2 s → **10,3 s**, 3 herramientas en vez de 5, sin guardar de prepo y sin duplicar
-la fruta. Comprobado con el pedido textual de la captura: `tests/test_gate_guardar.py`.
+**Resultado:** 44,2 s → **9,8 s** y **1 herramienta en vez de 5**, sin duplicar la fruta (y sí
+guardando, porque el `;` lo pedía). Comprobado con el pedido textual de la captura:
+`tests/test_gate_guardar.py`.
+
+### Pedidos compuestos: resolver local y molestar al modelo solo con lo que sobra
+
+Gastón carga el día con una lista: `"700, desayuno típico, media mañana: 20 almendras y 1 fruta;"`.
+Mandarlo entero cuesta **una vuelta al modelo por cada herramienta**. `_atajo_compuesto` corta por
+comas (sin romper paréntesis), resuelve local cada parte que reconoce sin ambigüedad, y le manda al
+modelo **solo el resto**:
+
+| Pedido | Antes | Ahora |
+|---|---|---|
+| `700, desayuno típico, media mañana: 20 almendras y 1 fruta;` | 44,2 s · 5 tools | **9,8 s · 1 tool** |
+| `2400, desayuno típico, almuerzo típico, cena típica;` | ~15 s · 4 tools | **0,00 s · sin modelo** |
+
+Un número suelto solo cuenta como gasto **si es el primer ítem de una lista** (aislado sería
+ambiguo: podrían ser las kcal de algo). Y la respuesta del modelo se prefija con lo hecho localmente
+(`_sumar_lo_hecho`): si no, el usuario pide cuatro cosas y lee la confirmación de una sola.
 
 ## ⚠️ LECCIÓN (2026-08-13) — optimicé por el camino fácil y le saqué la mitad de la app
 

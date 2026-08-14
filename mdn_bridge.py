@@ -271,9 +271,18 @@ def quitar_comida_libre(descripcion: str) -> dict:
     return {"error": f"no encontré una comida libre que coincida con: {descripcion}"}
 
 
-# Frases con las que SÍ se está pidiendo archivar el día.
+# Con qué se está pidiendo archivar el día.
+# ⚠️ El ";" final es una convención de Gastón: "700, desayuno típico, ...;" TERMINA
+# con punto y coma y eso significa guardar. El 2026-08-14 puse el gate sin saberlo y
+# le bloqueé algo que usa a diario. Las convenciones del usuario no se deducen del
+# código: si aparece otra, va acá.
 _RE_PIDE_GUARDAR = re.compile(
-    r'\b(guard[aáeé]\w*|archiv\w+|cerr[aáeé]\s*(el\s+)?d[ií]a|dale\s+guardar)\b', re.I)
+    r'\b(guard[aáeé]\w*|archiv\w+|cerr[aáeé]\s*(el\s+)?d[ií]a|dale\s+guardar)\b|;\s*$', re.I)
+
+# Si Gastón le enseñó al asistente alguna convención propia sobre guardar, el modelo
+# la conoce y yo no. En ese caso el gate se corre: una lista fija de palabras mías no
+# puede arbitrar sobre algo que él definió.
+_RE_MEMORIA_GUARDAR = re.compile(r'guard\w+|archiv\w+|cerr\w+\s+(el\s+)?d[ií]a', re.I)
 
 
 @mcp.tool()
@@ -282,18 +291,25 @@ def guardar_dia() -> dict:
 
     SOLO si el usuario lo pidió explícitamente ("guardá el día", "archivalo").
     """
-    # ⚠️ Gate determinístico (2026-08-14). El prompt ya decía "NUNCA uses guardar_dia
-    # salvo que te lo pidan explícitamente" y el modelo lo hizo igual: con
-    # "700, desayuno típico, media mañana: 20 almendras y 1 fruta (manzana);" archivó
-    # el día solo. Una acción que toca el historial no puede depender de que el modelo
-    # obedezca una instrucción: se verifica contra lo que el usuario realmente escribió.
+    # ⚠️ Gate determinístico (2026-08-14): se valida contra lo que el usuario escribió,
+    # no contra lo que el modelo crea que le pidieron — archivar toca el historial.
+    # Pero el gate NO manda sobre las convenciones de Gastón: si le enseñó una regla
+    # de guardado al asistente (está en la memoria), el que sabe interpretarla es el
+    # modelo. El gate protege el caso en que no hay ninguna señal.
     pedido = _state.get("_mensaje", "")
-    if not _RE_PIDE_GUARDAR.search(pedido):
-        return {"error": "El usuario NO pidió guardar el día, así que no lo guardé. "
-                         "Seguí con lo que sí pidió y no vuelvas a llamar esta "
-                         "herramienta salvo que lo diga con todas las letras."}
-    _state["_guardar"] = True
-    return {"ok": True, "mensaje": "Marcado para guardar (el front lo archiva)"}
+    if _RE_PIDE_GUARDAR.search(pedido):
+        _state["_guardar"] = True
+        return {"ok": True, "mensaje": "Marcado para guardar (el front lo archiva)"}
+
+    memoria = " ".join(m.get("texto", "") for m in _state.get("memoria", []))
+    if _RE_MEMORIA_GUARDAR.search(memoria):
+        _state["_guardar"] = True
+        log.info("[guardar_dia] permitido por una convención de la memoria")
+        return {"ok": True, "mensaje": "Marcado para guardar (el front lo archiva)"}
+
+    return {"error": "El usuario NO pidió guardar el día, así que no lo guardé. "
+                     "Seguí con lo que sí pidió y no vuelvas a llamar esta "
+                     "herramienta salvo que lo diga con todas las letras."}
 
 
 @mcp.tool()
@@ -433,10 +449,13 @@ def _atajo_local(msg):
         r = cargar_comida_tipica(_COMIDAS[nombre])
         if "error" in r:
             return None, False               # que Claude explique por qué no pudo
+        # "cena" y "merienda" son femeninas: "cena típico cargado" se lee escrito por una máquina
+        fem = nombre in ("cena", "merienda", "media manana")
+        etiqueta = f"{nombre} {'típica cargada' if fem else 'típico cargado'}"
         _acciones_atajo.append(
             f'Usuario: "{msg}" → cargué el {nombre} típico '
             f'(secciones {nombre}, ninguna otra comida).')
-        return f"Listo, {nombre} típico cargado.", True
+        return f"Listo, {etiqueta}.", True
 
     # Limpiar
     if _RE_LIMPIAR.match(m):
@@ -445,6 +464,69 @@ def _atajo_local(msg):
         return "Día en cero.", True
 
     return None, False
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Pedidos compuestos: "700, desayuno típico, media mañana: 20 almendras y 1 fruta;"
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# Así carga Gastón el día: una lista separada por comas, terminada en ";" (que en su
+# convención significa guardar). Mandarlo entero al modelo cuesta una vuelta por cada
+# herramienta — el pedido de arriba eran 4 y tardaba 44 s.
+#
+# Acá se resuelve localmente CADA parte que se reconozca sin ambigüedad, y al modelo
+# le queda solo lo que sobra. Si no sobra nada, ni se lo llama.
+
+# Un número solo ("700") dentro de una lista: es el gasto. Suelto sería ambiguo
+# —podrían ser las kcal de algo— así que solo cuenta como parte de un compuesto.
+_RE_SOLO_NUMERO = re.compile(r'^(\d{3,5})$')
+
+def _partir_en_partes(msg):
+    """Corta por comas y ';', sin romper lo que está entre paréntesis."""
+    partes, actual, prof = [], [], 0
+    for ch in msg:
+        if ch in "([":
+            prof += 1
+        elif ch in ")]":
+            prof = max(0, prof - 1)
+        if ch in ",;" and prof == 0:
+            partes.append("".join(actual).strip())
+            actual = []
+            continue
+        actual.append(ch)
+    partes.append("".join(actual).strip())
+    return [p for p in partes if p]
+
+
+def _atajo_compuesto(msg):
+    """Resuelve las partes reconocibles. Devuelve (hechas, pendientes, guardar).
+
+    `pendientes` son las partes que hay que mandarle al modelo. Vacío = no hace falta.
+    """
+    partes = _partir_en_partes(msg)
+    if len(partes) < 2:
+        return [], [msg], False           # no es compuesto: camino de siempre
+
+    guardar = bool(re.search(r';\s*$', msg))
+    hechas, pendientes = [], []
+
+    for i, parte in enumerate(partes):
+        # "700" como primer ítem de la lista = gasto del día
+        mo = _RE_SOLO_NUMERO.match(_normalizar(parte))
+        if mo and i == 0:
+            kcal = int(mo.group(1))
+            if 100 <= kcal <= 9999:
+                poner_gasto(kcal)
+                hechas.append(f"gasto {kcal} kcal")
+                continue
+
+        texto, ok = _atajo_local(parte)
+        if ok:
+            hechas.append(texto.rstrip(".").replace("Listo, ", ""))
+        else:
+            pendientes.append(parte)
+
+    return hechas, pendientes, guardar
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -930,15 +1012,55 @@ def _preparar(data):
     conv_id = data.get("convId") or None
     # Si el proceso se va a rearmar, hay que reponerle la charla previa.
     sembrar = _motor.estado()["pedidos"] == 0 or conv_id != _motor._conv_id
+
+    # ── Resolver local todo lo que se pueda antes de molestar al modelo ──
+    resuelto, para_claude, hechas = None, mensaje, []
+    if not imagenes:
+        texto, ok = _atajo_local(mensaje)
+        if ok:
+            resuelto = texto
+        else:
+            hechas, pendientes, guardar = _atajo_compuesto(mensaje)
+            if hechas:
+                if guardar:
+                    guardar_dia()          # el ";" final ya pasa el gate
+                    hechas.append("día guardado")
+                if pendientes:
+                    # Al modelo le queda SOLO lo que no se pudo resolver acá.
+                    para_claude = ", ".join(pendientes)
+                    log.info(f"[compuesto] resueltas {len(hechas)} partes local; "
+                             f"al modelo le va: {para_claude[:60]!r}")
+                else:
+                    resuelto = "Listo: " + ", ".join(hechas) + "."
+                    log.info(f"[compuesto] {len(hechas)} partes, ninguna al modelo")
+
     return {
         "mensaje": mensaje,
+        "resuelto": resuelto,          # respuesta lista, sin pasar por el modelo
+        # Lo que ya se hizo acá. El modelo solo ve lo que le queda, así que su
+        # respuesta habla nada más que de eso: si no se lo sumamos, el usuario pidió
+        # cuatro cosas y lee la confirmación de una sola.
+        "hechas": hechas,
         "imagenes": imagenes,
         "modelo": data.get("model", "claude-haiku-4-5-20251001"),
         "conv_id": conv_id,
         "prompt_base": prompt_base,
-        "prompt": _prompt_del_pedido(mensaje, volatil,
-                                     data.get("history", []) or [], sembrar),
+        # ⚠️ Solo si el modelo va a intervenir: armar el prompt CONSUME el rastro de
+        # los atajos (_acciones_atajo), y si se arma para nada, ese rastro se pierde y
+        # el pedido siguiente queda sin contexto. Fue exactamente el bug de
+        # "cargame el almuerzo típico" → "no, pechuga de 200 mejor" → la puso en el
+        # desayuno, reaparecido por otra puerta.
+        "prompt": None if resuelto is not None else _prompt_del_pedido(
+            para_claude, volatil, data.get("history", []) or [], sembrar),
     }
+
+
+def _sumar_lo_hecho(reply, hechas):
+    """Antepone a la respuesta del modelo lo que ya se había resuelto sin él."""
+    if not hechas:
+        return reply
+    prefijo = "Listo: " + ", ".join(hechas) + "."
+    return f"{prefijo}\n{reply}" if reply else prefijo
 
 
 @app.route("/chat", methods=["POST"])
@@ -959,9 +1081,8 @@ def chat():
     t0 = datetime.now()
     herramientas = []
 
-    # ── Atajo: solo si el mensaje ES el comando entero (ver _atajo_local) ──
-    # Con imagen nunca hay atajo: hay que mirarla.
-    reply, fue_atajo = (None, False) if p["imagenes"] else _atajo_local(p["mensaje"])
+    # ── Lo que se resolvió sin el modelo (atajo simple o compuesto) ──
+    reply, fue_atajo = p["resuelto"], p["resuelto"] is not None
     if fue_atajo:
         log.info(f"[ATAJO] {(datetime.now()-t0).total_seconds():.3f}s | {p['mensaje'][:60]}")
     else:
@@ -972,6 +1093,7 @@ def chat():
         except Exception as e:
             log.error(f"Error hablando con Claude: {e}\n{traceback.format_exc()}")
             return jsonify({"error": str(e)}), 500
+        reply = _sumar_lo_hecho(reply, p["hechas"])
         n_img = len(p["imagenes"])
         log.info(f"[chat] {(datetime.now()-t0).total_seconds():.1f}s | modelo={p['modelo']}"
                  + (f" | {n_img} img" if n_img else "")
@@ -1012,8 +1134,9 @@ def chat_stream():
         return f"data: {json.dumps(d, ensure_ascii=False)}\n\n"
 
     def generar():
-        # Atajo: sale entero, pero por el mismo canal para que el front tenga un solo camino
-        reply, fue_atajo = (None, False) if p["imagenes"] else _atajo_local(p["mensaje"])
+        # Lo resuelto sin modelo sale entero, pero por el mismo canal: así el front
+        # tiene un solo camino y no le importa si intervino Claude o no.
+        reply, fue_atajo = p["resuelto"], p["resuelto"] is not None
         if fue_atajo:
             log.info(f"[ATAJO] {(datetime.now()-t0).total_seconds():.3f}s | {p['mensaje'][:60]}")
             with _state_lock:
@@ -1039,6 +1162,7 @@ def chat_stream():
                 elif ev["tipo"] == "fin":
                     with _state_lock:
                         st = _instantanea_estado()
+                    ev["reply"] = _sumar_lo_hecho(ev.get("reply", ""), p["hechas"])
                     dur = (datetime.now() - t0).total_seconds()
                     n_img = len(p["imagenes"])
                     log.info(f"[stream] {dur:.1f}s | modelo={p['modelo']}"

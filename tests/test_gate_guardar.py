@@ -49,7 +49,12 @@ def correr(msg, modelo, conv):
                 elif ev["tipo"]=="error": print("  ERROR:",ev["error"]); return None
     return fin, tools, reply, st
 
+# ⚠️ El ";" final SIGNIFICA GUARDAR (convencion de Gaston, dicha el 2026-08-14).
+# La primera version de este test daba por sentado que guardar ahi estaba MAL — estaba
+# mal la suposicion, no el modelo. Lo que si sobraba era agregar_comida_libre
+# duplicando la fruta que seleccionar_opcion ya habia puesto.
 MSG_CAPTURA = "700, desayuno típico, media mañana: 20 almendras y 1 fruta (manzana);"
+MSG_SIN_PUNTOYCOMA = "poneme 1900 de gasto y cargame el almuerzo típico"
 MODELO = "claude-sonnet-4-6"
 conv = f"gate-{int(time.time())}"
 
@@ -60,16 +65,30 @@ urllib.request.urlopen(urllib.request.Request(URL+"/warmup", method="POST",
 time.sleep(11)
 
 print("=" * 74)
-print("EL PEDIDO DE LA CAPTURA (antes: 44,2 s y guardo el dia sin que se lo pidieran)")
+print("EL PEDIDO DE LA CAPTURA (antes: 44,2 s, 5 tools, la fruta duplicada)")
 print("=" * 74)
 r = correr(MSG_CAPTURA, MODELO, conv)
 if r:
     fin, tools, reply, st = r
     print(f"  TIEMPO: {fin:.1f}s      (antes 44,2s)")
-    print(f"  herramientas: {tools}")
-    print(f"  guardo el dia?: {'SI — TODAVIA MAL' if st.get('guardar') else 'NO — correcto'}")
+    print(f"  herramientas del modelo: {tools}      (antes 5)")
+    print(f"  guardo por el ';'?: {'SI — correcto' if st.get('guardar') else 'NO — SE ROMPIO LA CONVENCION'}")
+    dup = len(st.get('extrasLibres', []))
+    print(f"  duplico la fruta como comida libre?: {'SI — MAL' if dup else 'no — correcto'}")
     print(f"  respuesta: {reply[:150]!r}")
-    print(f"  gasto={st.get('gasto')}  secciones cargadas={len(st.get('sel',{}))}  libres={len(st.get('extrasLibres',[]))}")
+    print(f"  gasto={st.get('gasto')}  secciones cargadas={len(st.get('sel',{}))}")
+
+print()
+print("=" * 74)
+print("SIN ';' NI PEDIDO DE GUARDAR — el gate tiene que impedir que archive")
+print("=" * 74)
+r = correr(MSG_SIN_PUNTOYCOMA, MODELO, conv)
+if r:
+    fin, tools, reply, st = r
+    print(f"  TIEMPO: {fin:.1f}s")
+    print(f"  herramientas del modelo: {tools}")
+    print(f"  guardo?: {'SI — MAL, archivo sin que se lo pidieran' if st.get('guardar') else 'NO — correcto'}")
+    print(f"  gasto={st.get('gasto')}  secciones={len(st.get('sel',{}))}")
 
 print()
 print("=" * 74)
