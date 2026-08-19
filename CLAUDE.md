@@ -125,7 +125,11 @@ Backend que conecta la app con la **suscripción Claude Max** ($0 API) vía **Ag
 | Patrón | MAX BRIDGE obligatorio (ver `apps ECD\MAX BRIDGE\CLAUDE.md`) |
 | MCP tools | 11 herramientas (agregar/quitar comida, cargar día típico, gasto, etc.) |
 | Modelos | `bridge-haiku` (Haiku 4.5) y `bridge-sonnet` (Sonnet 4.6) |
-| Acceso celular | Tailscale `http://100.110.55.41:8793/` |
+| **Dónde corre** | **La Intergaláctica** (2026-08-19) — es el servidor y queda prendida, así que la app anda con la PC Normal apagada |
+| Ruta allá | `C:\Users\Usuario\apps\mdn_bridge` · tarea `MDN Bridge` · el Python de esa PC |
+| Desde casa | `http://192.168.1.251:8793/` |
+| Desde el celular | Tailscale `http://100.112.91.4:8793/` |
+| En la PC Normal | tarea **deshabilitada**, lista por si hay que volver: `Enable-ScheduledTask -TaskName 'MDN Bridge'` |
 | Mixed content | Resuelto: el bridge sirve la PWA en `/` → mismo origen |
 | Arranque | `python mdn_bridge.py` con `CreateNoWindow` (NO usar `pythonw`, muere mudo) |
 
