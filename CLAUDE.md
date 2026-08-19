@@ -375,3 +375,31 @@ acumula estado que lo hace ver mejor de lo que es. Igualar el punto de partida a
 
 Queda un ~20% de diferencia que no se explicó: con el SDK puro empatan, pero a través del bridge la
 Intergaláctica va 0,8 s atrás. La causa no se encontró.
+
+## Mudanza a la Intergaláctica (2026-08-19) — lo que costó y cómo se resolvió
+
+El bridge corre **en la Intergaláctica**. El camino completo para mudar algo entre máquinas está
+en la skill **`instalar-servicio-remoto`**; acá queda lo propio de este caso.
+
+**Lo que se rompió y por qué:**
+
+| Falló | Causa | Arreglo |
+|---|---|---|
+| `ModuleNotFoundError: mcp.server.fastmcp` | `pip install` trajo **mcp 2.0.0**, que movió `FastMCP` | Fijar las versiones de la PC que funciona: `claude-agent-sdk==0.2.110`, `mcp==1.28.1` |
+| El bridge no levantaba y el log mostraba un error viejo | El log del día se acumula; el traceback era de un intento anterior | Capturar el error real con `-RedirectStandardError` y mirar timestamps |
+| `/status` decía el puerto equivocado | Devolvía la constante `PORT`, no el puerto abierto | `PUERTO_REAL`, que se setea en `main()` |
+| El banner anunciaba la IP de la PC Normal | Estaba escrita a mano | Detecta las IP reales de la máquina donde corre |
+| La app apuntaba a la máquina vieja | `BRIDGE_URLS_DEFAULT` fijo | Orden: mismo origen → Intergaláctica LAN → Tailscale → PC Normal |
+
+**El login del CLI lo tiene que hacer Gastón**: `claude auth login` abre navegador y pide pegar un
+código. Desde WinRM no hay escritorio, así que se lanza con una tarea `-LogonType Interactive` y él
+completa por RDP. **La URL es de un solo uso**: si el intento se corta, hay que relanzar.
+
+**Medición honesta entre máquinas.** La primera comparación dio **+26%** para la Intergaláctica y
+casi descarto la mudanza. Era **artefacto**: comparaba el bridge de la PC Normal con días de uso
+(prompt cacheado) contra uno recién levantado. Emparejando, la diferencia real fue **+0,44 s**; y
+con el **SDK puro**, **+1,8%**. La Intergaláctica gana en todo lo medible — CPU (14c/20h vs 6c/12h),
+internet (29 ms vs 101 ms a la API) y arranque del proceso (1,7 s vs 8,6 s).
+
+**Se paga ~0,8 s por pedido** que no logré explicar (con el SDK puro empatan, a través del bridge
+no). Gastón lo aceptó a cambio de que la app funcione con la PC Normal apagada.
