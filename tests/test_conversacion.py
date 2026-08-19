@@ -7,7 +7,8 @@ seleccion puntual (que el atajo pisaba) y contexto entre mensajes.
 import sys, io, json, time, urllib.request
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
 
-URL = "http://localhost:8793"
+import os
+URL = os.environ.get("MDN_URL", "http://localhost:8793")
 CONV = "test-" + str(int(time.time()))
 
 CATALOGO = (

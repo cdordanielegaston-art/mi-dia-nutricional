@@ -331,3 +331,43 @@ el drag & drop de HTML5 no funciona con el dedo). Los movidos quedan con un punt
   limpia con `resetAll`.
 - La columna **OTROS** solo aparece si tiene algo: es el cajón de lo que no cae en ninguna comida
   (extras del día, leche, huevos sueltos y las comidas libres), para reubicar desde ahí.
+
+## Optimización del pedido (2026-08-19) — y por qué la Intergaláctica parecía lenta
+
+Gastón pidió mudar el bridge a la Intergaláctica "solo si no lo hace ni 1% más lento". La primera
+medición dio **+26%** y casi lo descarto. Era un **artefacto de la comparación**:
+
+| Se comparaba | PC Normal | Intergaláctica |
+|---|---|---|
+| bridge con días de uso (prompt cacheado) | 4,4 s | — |
+| bridge recién arrancado (caché frío) | — | 5,6 s |
+
+Reiniciando el de la PC Normal para dejar a las dos parejas, la brecha se desplomó a **+0,44 s**, y
+el tramo "hasta el primer evento" quedó en **+0,02 s**. Con el **SDK puro** (sin bridge, sin red) las
+dos máquinas rinden igual: **4,47 s contra 4,55 s, +1,8%**.
+
+**Lección: nunca comparar un proceso caliente contra uno recién levantado.** El proceso persistente
+acumula estado que lo hace ver mejor de lo que es. Igualar el punto de partida antes de medir.
+
+### Lo que sí bajó el tiempo, en las dos máquinas
+
+1. **`include_partial_messages=False`** (`DELTAS_DE_TEXTO`, se enciende con `MDN_DELTAS=1`).
+   Ver la respuesta escribirse letra por letra cuesta **~0,6 s por pedido (14%)**: son ~50 mensajes
+   por el pipe en vez de ~15. Y las respuestas de esta app son de una línea — no hay nada que ver
+   escribirse. **No saca el streaming**: los `AssistantMessage` siguen llegando, así que el día se
+   actualiza apenas corre cada herramienta, que es la parte que de verdad se nota.
+2. **El warmup ahora precalienta el prompt**, no solo arranca el proceso: manda un pedido trivial
+   para que el catálogo (~3.000 tokens) quede procesado. El primer pedido real ya no lo paga.
+
+**Resultado:** PC Normal 4,4 → **3,6 s**. Intergaláctica 5,6 → **4,4 s**. Las dos ~20% más rápidas.
+
+### Lo que se descartó midiendo (no suponiendo)
+
+- **Antivirus**: exclusiones de Defender acotadas al bridge y su runtime → **sin efecto** (+1,17 s
+  contra +1,20 s). **Revertidas**, para no dejar la protección bajada a cambio de nada.
+- **Plan de energía**: las dos en Equilibrado. **Carga de CPU**: la Intergaláctica está *menos*
+  cargada (5% contra 56%). **DNS/proxy/exit node**: iguales. **CLI**: las dos usan el bundled.
+- **Internet**: la Intergaláctica es *mejor* (29 ms contra 101 ms a la API).
+
+Queda un ~20% de diferencia que no se explicó: con el SDK puro empatan, pero a través del bridge la
+Intergaláctica va 0,8 s atrás. La causa no se encontró.

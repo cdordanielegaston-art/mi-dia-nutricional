@@ -66,6 +66,11 @@ PORT = 8793                 # default; --port lo cambia
 PUERTO_REAL = [PORT]        # el que realmente se abrió, para que /status no mienta
 FACTURABLES = ("user", "project", "org", "temporary")
 
+# Ver la respuesta escribirse letra por letra cuesta ~0,6 s por pedido (14%). Como las
+# respuestas de esta app son de una línea, no compensa. Encenderlo con
+# MDN_DELTAS=1 si alguna vez se quiere de vuelta. Ver el comentario en _abrir().
+DELTAS_DE_TEXTO = os.environ.get("MDN_DELTAS", "0") == "1"
+
 # ── Logging ──────────────────────────────────────────────────────────────────
 # Bajo pythonw, stderr YA es el archivo de log: sumarle el StreamHandler escribía
 # cada línea dos veces (y duplicaba el tamaño del log).
@@ -611,9 +616,16 @@ class _MotorClaude:
             permission_mode="bypassPermissions",
             max_turns=8,
             effort="low",
-            # Sin esto el SDK entrega bloques ya terminados y el texto aparece de golpe
-            # al final; con esto llegan los deltas y la respuesta se ve escribirse.
-            include_partial_messages=True,
+            # Los deltas (ver la respuesta escribirse letra por letra) cuestan CARO:
+            # medido el 2026-08-19 con el SDK puro, 4,47 s contra 3,83 s por pedido —
+            # ~0,6 s, un 14%. Son ~50 mensajes por el pipe en vez de ~15, y las
+            # respuestas de esta app son de una línea: no hay nada que ver escribirse.
+            #
+            # Apagarlos NO saca el streaming: los AssistantMessage siguen llegando, así
+            # que el día se sigue actualizando apenas corre cada herramienta (que es la
+            # parte que de verdad se nota). Solo se pierde el efecto máquina de escribir
+            # en las respuestas largas, que son la excepción.
+            include_partial_messages=DELTAS_DE_TEXTO,
         )
         c = ClaudeSDKClient(options=opts)
         await c.connect()
@@ -967,9 +979,20 @@ def warmup():
         try:
             t0 = datetime.now()
             with _motor._lock:
-                _motor._correr(_motor._asegurar(modelo, prompt_base, data.get("convId")),
-                               timeout=90)
-            log.info(f"[warmup] proceso listo en {(datetime.now()-t0).total_seconds():.1f}s")
+                client = _motor._correr(_motor._asegurar(modelo, prompt_base,
+                                                         data.get("convId")), timeout=90)
+            # Arrancar el proceso no alcanza: el catálogo son ~3.000 tokens que se
+            # procesan enteros en el primer pedido. Un pedido trivial acá deja ese
+            # trabajo hecho y cacheado, así que el PRIMER pedido real de Gastón ya
+            # sale rápido en vez de pagar el prompt completo.
+            try:
+                with _motor._lock:
+                    _motor._correr(_motor._pedir(client, "Respondé solo: listo"),
+                                   timeout=60)
+                cache = " (+ prompt precalentado)"
+            except Exception:
+                cache = ""    # si falla, el proceso igual quedó levantado
+            log.info(f"[warmup] listo en {(datetime.now()-t0).total_seconds():.1f}s{cache}")
         except Exception as e:
             log.warning(f"[warmup] falló: {e}")
 
