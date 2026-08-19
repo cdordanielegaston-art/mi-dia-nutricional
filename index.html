@@ -53,6 +53,10 @@ const { useState, useMemo, useEffect, useCallback, useRef } = React;
 
 const STORAGE_KEY = 'miDiaNutricional_v9';
 const HISTORY_KEY = 'miDiaNutricional_v9_history';
+// A que comida decidio Gaston que cuenta cada item, cuando no es la que le toca por
+// catalogo (ej: la banana esta en la seccion del desayuno pero se la comio de postre
+// del almuerzo). { 'sec:des_carb': 'almuerzo', 'lib:x123': 'cena' }
+const REASIGN_STORAGE = 'miDiaNutricional_reasign';
 const AI_KEY_STORAGE = 'miDiaNutricional_openaiKey';
 const AI_MODEL_STORAGE = 'miDiaNutricional_openaiModel';
 const AI_SYSTEM_PROMPT = `Convertis una descripcion en lenguaje natural de lo que una persona comio hoy en selecciones de un tracker nutricional.
@@ -220,6 +224,25 @@ const SECCIONES_POR_COMIDA = {
   almuerzo:     ['alm_', 'add_batata_a', 'add_huevos1_a', 'add_huevos2_a'],
   merienda:     ['mer_'],
   cena:         ['cena_', 'add_batata_c', 'add_huevos1_c', 'add_huevos2_c']
+};
+
+// ── Resumen de abajo: columnas y a cual va cada grupo por defecto ────────────
+// Las 5 comidas + "Otros" para lo que no cae en ninguna (extras del dia, leche,
+// huevos sueltos, comidas libres). La columna Otros solo aparece si tiene algo:
+// es el cajon de lo que hay que reubicar, no una comida de verdad.
+const COLS_RESUMEN = [
+  { key: 'desayuno',     label: 'DESAYUNO' },
+  { key: 'media_manana', label: 'MEDIA MAÑANA' },
+  { key: 'almuerzo',     label: 'ALMUERZO' },
+  { key: 'merienda',     label: 'MERIENDA' },
+  { key: 'cena',         label: 'CENA' },
+  { key: 'otros',        label: 'OTROS' }
+];
+const COMIDA_DE_GRUPO = {
+  desayuno: 'desayuno', media_manana: 'media_manana', almuerzo: 'almuerzo',
+  merienda: 'merienda', cena: 'cena',
+  add_almuerzo: 'almuerzo', add_cena: 'cena',
+  extras: 'otros', leche: 'otros', huevos_dia: 'otros'
 };
 
 // Arma la confirmacion en la app, sin gastar otra llamada. Devuelve null si alguna
@@ -622,12 +645,28 @@ function App() {
 
   useEffect(() => { try { localStorage.setItem(EXTRAS_STORAGE, JSON.stringify(extrasLibres)); } catch(e){} }, [extrasLibres]);
 
+  // Reasignaciones del resumen de abajo (arrastrar un item de una comida a otra)
+  const [arrastrado, setArrastrado] = useState(null);   // item que se esta moviendo
+  const [menuItem, setMenuItem] = useState(null);       // menu por toque (celular)
+  const [reasign, setReasign] = useState(() => { try { const r = localStorage.getItem(REASIGN_STORAGE); return r ? JSON.parse(r) : {}; } catch(e){ return {}; } });
+  useEffect(() => { try { localStorage.setItem(REASIGN_STORAGE, JSON.stringify(reasign)); } catch(e){} }, [reasign]);
+  const moverItem = (itemKey, comidaDestino, comidaDefault) => {
+    setReasign(prev => {
+      const n = { ...prev };
+      // Volver a su lugar de origen no es una reasignacion: se borra la entrada
+      // en vez de guardar "esta donde ya estaba".
+      if (comidaDestino === comidaDefault) delete n[itemKey];
+      else n[itemKey] = comidaDestino;
+      return n;
+    });
+  };
+
   useEffect(() => {
     try { localStorage.setItem(STORAGE_KEY, JSON.stringify({ sel, gastoWhoop })); } catch(e) {}
   }, [sel, gastoWhoop]);
 
   const update = (key, val) => setSel(prev => ({ ...prev, [key]: val }));
-  const resetAll = () => { setSel(zeroDefaults); setExtrasLibres([]); };
+  const resetAll = () => { setSel(zeroDefaults); setExtrasLibres([]); setReasign({}); };
   const addExtraLibre = (desc, kcal, p, c, f) => {
     const e = { id: 'x' + Date.now() + '_' + Math.floor(Math.random()*1000), desc: (desc || 'Extra').trim() || 'Extra', kcal: Math.round(+kcal || 0), p: +p || 0, c: +c || 0, f: +f || 0, ts: Date.now(), src: 'app' };
     setExtrasLibres(prev => [e, ...prev]);
@@ -647,6 +686,45 @@ function App() {
     });
     return t;
   }, [sel]);
+
+  // ── Lo que hay cargado hoy, item por item, para el resumen de abajo ──────────
+  // Solo lo que SUMA: las secciones en "nada"/"sin X" valen 0 y ensucian la tabla.
+  const itemsCargados = useMemo(() => {
+    const items = [];
+    Object.entries(MEALS).forEach(([mk, meal]) => {
+      const porDefecto = COMIDA_DE_GRUPO[mk] || 'otros';
+      meal.sections.forEach(sec => {
+        const ch = sec.options.find(o => o.id === sel[sec.key]);
+        if (!ch || (!ch.kcal && !ch.p && !ch.c && !ch.f)) return;
+        const key = 'sec:' + sec.key;
+        items.push({
+          key, label: ch.label, kcal: ch.kcal, p: ch.p, c: ch.c, f: ch.f,
+          comidaDefault: porDefecto, comida: reasign[key] || porDefecto,
+          origen: meal.label
+        });
+      });
+    });
+    (extrasLibres || []).forEach(e => {
+      const key = 'lib:' + e.id;
+      items.push({
+        key, label: e.desc, kcal: e.kcal, p: e.p, c: e.c, f: e.f,
+        comidaDefault: 'otros', comida: reasign[key] || 'otros',
+        origen: 'Comida libre', libre: true
+      });
+    });
+    return items;
+  }, [sel, extrasLibres, reasign]);
+
+  // Totales por columna del resumen (respetan lo que Gaston haya reubicado)
+  const totalesResumen = useMemo(() => {
+    const t = {};
+    COLS_RESUMEN.forEach(col => { t[col.key] = { kcal: 0, p: 0, c: 0, f: 0, n: 0 }; });
+    itemsCargados.forEach(it => {
+      const d = t[it.comida] || t.otros;
+      d.kcal += it.kcal; d.p += it.p; d.c += it.c; d.f += it.f; d.n++;
+    });
+    return t;
+  }, [itemsCargados]);
 
   const results = useMemo(() => {
     let kcal = 0, p = 0, c = 0, f = 0;
@@ -696,7 +774,7 @@ function App() {
 
   const saveDay = () => {
     const today = new Date().toISOString().split('T')[0];
-    const entry = { date: today, ts: Date.now(), kcal: results.kcal, p: Math.round(results.p), c: Math.round(results.c), f: Math.round(results.f), gasto: results.gasto, deficit: results.deficit, deficitPct: results.deficitPct, gkgMLG: parseFloat(results.gkgMLG.toFixed(2)), sel: { ...sel }, gastoWhoop, extrasLibres: [...extrasLibres] };
+    const entry = { date: today, ts: Date.now(), kcal: results.kcal, p: Math.round(results.p), c: Math.round(results.c), f: Math.round(results.f), gasto: results.gasto, deficit: results.deficit, deficitPct: results.deficitPct, gkgMLG: parseFloat(results.gkgMLG.toFixed(2)), sel: { ...sel }, gastoWhoop, extrasLibres: [...extrasLibres], reasign: { ...reasign } };
     const nh = [entry, ...history.filter(h => h.date !== today)].slice(0, 30);
     setHistory(nh);
     try { localStorage.setItem(HISTORY_KEY, JSON.stringify(nh)); } catch(e) {}
@@ -705,7 +783,7 @@ function App() {
     // el auto-push (useEffect con debounce) detecta el nuevo history y lo sube solo
   };
 
-  const loadDay = (entry) => { setSel(entry.sel || defaults); setGastoWhoop(entry.gastoWhoop || ""); setExtrasLibres(entry.extrasLibres || []); setShowHistory(false); };
+  const loadDay = (entry) => { setSel(entry.sel || defaults); setGastoWhoop(entry.gastoWhoop || ""); setExtrasLibres(entry.extrasLibres || []); setReasign(entry.reasign || {}); setShowHistory(false); };
   const deleteDay = (ts) => { const nh = history.filter(h => h.ts !== ts); setHistory(nh); try { localStorage.setItem(HISTORY_KEY, JSON.stringify(nh)); } catch(e) {} };
 
   const optVisible = (opt, sectionKey) => {
@@ -899,7 +977,7 @@ function App() {
 
   // Blob LIVIANO para no reventar la RAM de n8n: el día de hoy va completo (para "seguir mi día"); los días viejos van solo con totales, SIN el detalle de chips.
   const historyLite = (h) => { const hoyStr = new Date().toISOString().split('T')[0]; return (h || []).map(d => { if (!d || d.date === hoyStr) return d; const { sel, ...resto } = d; return resto; }); };
-  const canonBlob = (o) => JSON.stringify({ sel: o.sel, gastoWhoop: o.gastoWhoop, history: historyLite(o.history), diaTipicoCustom: o.diaTipicoCustom, extrasLibres: o.extrasLibres, chatMemoria: o.chatMemoria });
+  const canonBlob = (o) => JSON.stringify({ sel: o.sel, gastoWhoop: o.gastoWhoop, history: historyLite(o.history), diaTipicoCustom: o.diaTipicoCustom, extrasLibres: o.extrasLibres, chatMemoria: o.chatMemoria, reasign: o.reasign });
 
   const pushCloud = async (silent) => {
     if (!syncCode.trim()) { if (!silent) { setSyncMsg("Poné un código de sync primero"); setSyncMsgColor("#FF8C42"); } return; }
@@ -907,7 +985,7 @@ function App() {
     try {
       const now = new Date().toISOString();
       const key = canonBlob({ sel, gastoWhoop, history, diaTipicoCustom, extrasLibres, chatMemoria });
-      const blob = { sel, gastoWhoop, history: historyLite(history), diaTipicoCustom, extrasLibres, chatMemoria, _syncedAt: now, _v: 28 };
+      const blob = { sel, gastoWhoop, history: historyLite(history), diaTipicoCustom, extrasLibres, chatMemoria, reasign, _syncedAt: now, _v: 29 };
       await cloudPost({ op: "set", code: syncCode.trim(), data: JSON.stringify(blob) });
       lastBlobRef.current = key; setLastSyncedAt(now);
       if (!silent) { setSyncMsg("✓ Subido a la nube " + new Date().toLocaleTimeString("es-AR", { hour: "2-digit", minute: "2-digit" })); setSyncMsgColor("#00E5A0"); }
@@ -966,7 +1044,7 @@ function App() {
     if (key === lastBlobRef.current) return;
     const t = setTimeout(() => {
       const now = new Date().toISOString();
-      const blob = { sel, gastoWhoop, history: historyLite(history), diaTipicoCustom, extrasLibres, chatMemoria, _syncedAt: now, _v: 28 };
+      const blob = { sel, gastoWhoop, history: historyLite(history), diaTipicoCustom, extrasLibres, chatMemoria, reasign, _syncedAt: now, _v: 29 };
       cloudPost({ op: "set", code: syncCode.trim(), data: JSON.stringify(blob) })
         .then(() => { lastBlobRef.current = key; setLastSyncedAt(now); logSync('push OK'); })
         .catch(e => { console.error("[sync] auto-push", e); logSync('push ERROR: ' + (e.message||e)); });
@@ -2394,6 +2472,142 @@ function App() {
       <div style={{ textAlign: "center", fontSize: 10, color: "#1A2744", marginTop: 20 }}>
         Pechuga: 165kcal/100g, 31g prot | Atun: 116kcal/100g, 26g prot | Whey: 30g=120kcal, 25g prot | Clara: 17kcal, 3.6g prot | MLG=56.5kg
       </div>
+
+      {/* ===== RESUMEN DE LO CARGADO — arrastrable entre comidas ===== */}
+      {(() => {
+        // "Otros" solo se muestra si tiene algo: es el cajon de lo que hay que
+        // reubicar (extras del dia, leche, comidas libres), no una comida de verdad.
+        const cols = COLS_RESUMEN.filter(c => c.key !== 'otros' || totalesResumen.otros.n > 0);
+        const totalDia = itemsCargados.reduce((a, i) => a + i.kcal, 0);
+        const num = n => Math.round(n * 10) / 10;
+        const soltarEn = (comida) => (ev) => {
+          ev.preventDefault();
+          const k = ev.dataTransfer.getData('text/plain') || (arrastrado && arrastrado.key);
+          const it = itemsCargados.find(x => x.key === k);
+          if (it) moverItem(it.key, comida, it.comidaDefault);
+          setArrastrado(null);
+        };
+        const celdaDrop = (comida) => ({
+          onDragOver: (e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; },
+          onDrop: soltarEn(comida)
+        });
+        const bordeCelda = "1px solid #1A2744";
+
+        return (
+          <div style={{ marginTop: 24, background: "#131D35", border: "1.5px solid #1A2744", borderRadius: 12, overflow: "hidden" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "11px 14px", borderBottom: "1px solid #1A2744", flexWrap: "wrap", gap: 6 }}>
+              <div style={{ fontSize: 13, fontWeight: 800, color: "#fff" }}>
+                📋 Resumen de hoy
+                <span style={{ fontSize: 10, color: "#8899BB", fontWeight: 500 }}> · arrastrá un alimento a otra comida (o tocalo)</span>
+              </div>
+              {Object.keys(reasign).length > 0 && (
+                <button onClick={() => setReasign({})} title="Devolver todo a la comida que le toca por catálogo"
+                  style={{ background: "transparent", border: "1px solid #2E4272", borderRadius: 6, color: "#8899BB", padding: "3px 8px", fontSize: 10, cursor: "pointer" }}>
+                  ↺ deshacer los {Object.keys(reasign).length} movidos
+                </button>
+              )}
+            </div>
+
+            {itemsCargados.length === 0 ? (
+              <div style={{ padding: "18px 14px", textAlign: "center", fontSize: 12, color: "#8899BB" }}>
+                Todavía no cargaste nada hoy.
+              </div>
+            ) : (
+              <div style={{ overflowX: "auto" }}>
+                <table style={{ borderCollapse: "collapse", width: "100%", minWidth: 620, fontSize: 11 }}>
+                  <thead>
+                    <tr>
+                      <th style={{ border: bordeCelda, padding: "6px 8px", background: "#0F1830", color: "#8899BB", fontSize: 10, textAlign: "left", minWidth: 104, position: "sticky", left: 0, zIndex: 2 }}></th>
+                      {cols.map(col => (
+                        <th key={col.key} {...celdaDrop(col.key)}
+                          style={{ border: bordeCelda, padding: "6px 8px", background: arrastrado ? "#1B2C52" : "#0F1830",
+                                   color: arrastrado ? "#8AA4FF" : "#C8D2E8", fontSize: 10, fontWeight: 800, letterSpacing: .3, whiteSpace: "nowrap" }}>
+                          {col.label}
+                        </th>
+                      ))}
+                      <th style={{ border: bordeCelda, padding: "6px 8px", background: "#0F1830", color: "#C8D2E8", fontSize: 10, fontWeight: 800 }}>TOTAL</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {itemsCargados.map(it => {
+                      const movido = it.comida !== it.comidaDefault;
+                      return (
+                        <tr key={it.key}>
+                          <td style={{ border: bordeCelda, padding: "4px 8px", background: "#0F1830", color: "#fff", fontWeight: 700, fontSize: 10, position: "sticky", left: 0, zIndex: 1, maxWidth: 150 }}>
+                            {it.label}
+                            {movido && <span title={"Lo moviste desde " + it.origen} style={{ color: "#6C5CE7", marginLeft: 3 }}>•</span>}
+                          </td>
+                          {cols.map(col => (
+                            <td key={col.key} {...celdaDrop(col.key)}
+                              style={{ border: bordeCelda, padding: "3px 5px", textAlign: "center", verticalAlign: "middle",
+                                       background: arrastrado && arrastrado.key !== it.key ? "#16223E" : "transparent" }}>
+                              {it.comida === col.key && (
+                                <div
+                                  draggable
+                                  onDragStart={(e) => { e.dataTransfer.setData('text/plain', it.key); e.dataTransfer.effectAllowed = 'move'; setArrastrado(it); }}
+                                  onDragEnd={() => setArrastrado(null)}
+                                  onClick={() => setMenuItem(menuItem === it.key ? null : it.key)}
+                                  title="Arrastrame a otra comida (o tocame)"
+                                  style={{ cursor: "grab", userSelect: "none", padding: "3px 6px", borderRadius: 5,
+                                           background: movido ? "rgba(108,92,231,.16)" : "rgba(255,255,255,.03)",
+                                           border: movido ? "1px solid #6C5CE7" : "1px solid transparent",
+                                           opacity: arrastrado && arrastrado.key === it.key ? .4 : 1, whiteSpace: "nowrap" }}>
+                                  <span style={{ color: "#FFD93D" }}>{num(it.c)} carb</span>
+                                  <span style={{ color: "#8899BB" }}>, </span>
+                                  <span style={{ color: "#00E5A0" }}>{num(it.p)} pro</span>
+                                  <span style={{ color: "#8899BB" }}> </span>
+                                  <span style={{ color: "#00B8D4" }}>{num(it.f)} gra</span>
+                                  <span style={{ color: "#8899BB" }}> = </span>
+                                  <span style={{ color: "#FF8C42", fontWeight: 700 }}>{Math.round(it.kcal)} cal</span>
+                                  {menuItem === it.key && (
+                                    <div style={{ display: "flex", flexWrap: "wrap", gap: 3, marginTop: 4, justifyContent: "center" }}>
+                                      {COLS_RESUMEN.filter(c => c.key !== it.comida).map(c => (
+                                        <button key={c.key}
+                                          onClick={(e) => { e.stopPropagation(); moverItem(it.key, c.key, it.comidaDefault); setMenuItem(null); }}
+                                          style={{ background: "#1A2744", border: "1px solid #2E4272", borderRadius: 4, color: "#C8D2E8", fontSize: 9, padding: "2px 5px", cursor: "pointer" }}>
+                                          {c.label.toLowerCase()}
+                                        </button>
+                                      ))}
+                                    </div>
+                                  )}
+                                </div>
+                              )}
+                            </td>
+                          ))}
+                          <td style={{ border: bordeCelda, padding: "3px 6px", textAlign: "center", color: "#FF8C42", fontWeight: 700 }}>
+                            {Math.round(it.kcal)}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                    <tr>
+                      <td style={{ border: bordeCelda, padding: "6px 8px", background: "#0F1830", color: "#C8D2E8", fontWeight: 800, fontSize: 10, position: "sticky", left: 0, zIndex: 1 }}>CALORÍAS</td>
+                      {cols.map(col => {
+                        const t = totalesResumen[col.key];
+                        return (
+                          <td key={col.key} {...celdaDrop(col.key)}
+                            style={{ border: bordeCelda, padding: "6px 8px", textAlign: "center", background: "#0F1830" }}>
+                            {t.n > 0 ? (
+                              <div>
+                                <div style={{ color: "#FF8C42", fontWeight: 800, fontSize: 12 }}>{Math.round(t.kcal)}</div>
+                                <div style={{ color: "#8899BB", fontSize: 9 }}>{num(t.p)}p · {num(t.c)}c · {num(t.f)}g</div>
+                              </div>
+                            ) : <span style={{ color: "#2E4272" }}>—</span>}
+                          </td>
+                        );
+                      })}
+                      <td style={{ border: bordeCelda, padding: "6px 8px", textAlign: "center", background: "#0F1830" }}>
+                        <div style={{ color: "#FF8C42", fontWeight: 800, fontSize: 13 }}>{Math.round(totalDia)}</div>
+                        <div style={{ color: "#8899BB", fontSize: 9 }}>calorías</div>
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        );
+      })()}
 
       {/* ===== CHAT IA (abajo de todo) ===== */}
       <div id="asistente" style={{ marginTop: 24, background: "#131D35", border: "1.5px solid #6C5CE7", borderRadius: 12, overflow: "hidden" }}>

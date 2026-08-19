@@ -310,3 +310,24 @@ era fácil de recortar en vez de lo que estaba costando el tiempo.**
 **Corolario:** mis bugs no fueron líneas equivocadas — fueron **líneas ausentes** (el rastro del
 atajo, las tools, el historial, las imágenes). Ninguna falla ruidosa: la app arrancaba, contestaba
 y se veía bien. Por eso hay que ejercitarla, no leerla.
+
+## Resumen del día (2026-08-18) — tabla por comida, reasignable con el mouse
+
+Abajo de todo, justo antes del chat: una fila por alimento cargado, con sus macros en la
+columna de la comida a la que cuenta (`6 carb, 0 pro 0 gra = 80 calorías`), y una fila final de
+calorías por comida más el total. El formato salió de una planilla que usa Gastón.
+
+**Lo que se puede mover.** El catálogo fija a qué comida pertenece cada sección, pero la vida no:
+la banana está en la sección del desayuno y se la comió de postre del almuerzo. Cada alimento se
+**arrastra** a otra columna (mouse) o se **toca** para elegir destino de una lista (celular —
+el drag & drop de HTML5 no funciona con el dedo). Los movidos quedan con un punto `•` y hay un
+`↺ deshacer los N movidos` que devuelve todo a su lugar de catálogo.
+
+- Estado: `reasign` = `{ 'sec:des_carb': 'almuerzo', 'lib:x123': 'cena' }`. Volver un ítem a su
+  comida de origen **borra** la entrada en vez de guardar "está donde ya estaba".
+- Solo afecta a esta tabla; la vista de arriba y `¿Cómo voy?` siguen mostrando las secciones donde
+  están. El **total del día no cambia** al mover: es reasignar, no sumar.
+- Viaja en el sync (`canonBlob` + blob `_v: 29`), se guarda con el día (`saveDay`/`loadDay`) y se
+  limpia con `resetAll`.
+- La columna **OTROS** solo aparece si tiene algo: es el cajón de lo que no cae en ninguna comida
+  (extras del día, leche, huevos sueltos y las comidas libres), para reubicar desde ahí.
