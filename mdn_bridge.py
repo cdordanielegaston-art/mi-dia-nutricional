@@ -1255,8 +1255,19 @@ def main():
     puerto = args.port
     PUERTO_REAL[0] = puerto
     log.info(f"Escuchando en 0.0.0.0:{puerto}")
-    log.info(f"Desde la PC:  http://localhost:{puerto}/status")
-    log.info(f"Desde Tailscale: http://100.110.55.41:{puerto}/status")
+    log.info(f"Desde esta máquina: http://localhost:{puerto}/")
+    # Las IP reales de ESTA máquina: tenía la de la PC Normal escrita a mano y quedó
+    # mintiendo apenas el bridge se mudó a la Intergaláctica.
+    try:
+        import socket as _sk
+        for _fam, _, _, _, _dir in _sk.getaddrinfo(_sk.gethostname(), None, _sk.AF_INET):
+            _ip = _dir[0]
+            if _ip.startswith("100."):
+                log.info(f"Desde el celular (Tailscale): http://{_ip}:{puerto}/")
+            elif not _ip.startswith("127."):
+                log.info(f"Desde la red de casa: http://{_ip}:{puerto}/")
+    except Exception:
+        pass
 
     app.run(host="0.0.0.0", port=puerto, debug=False, threaded=True)
     return 0

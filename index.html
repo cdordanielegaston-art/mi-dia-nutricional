@@ -153,7 +153,14 @@ const MODELO_INICIAL = 'gemini-3.5-flash-lite-p';
 // URL del bridge: la PC de Gaston en Tailscale. En la PC local es localhost.
 // '' = mismo origen (cuando la PWA se sirve desde el bridge, no hay CORS ni mixed content)
 const BRIDGE_URL_STORAGE = 'miDiaNutricional_bridgeUrl';
-const BRIDGE_URLS_DEFAULT = ['', 'http://localhost:8793', 'http://100.110.55.41:8793'];
+// El bridge vive en la INTERGALACTICA (2026-08-19): es el servidor y queda prendido,
+// asi que la app anda aunque la PC Normal este apagada. Orden de busqueda:
+//   ''                -> mismo origen (cuando la pagina se abre DESDE el bridge)
+//   192.168.1.251     -> Intergalactica por LAN (lo mas rapido en casa)
+//   100.112.91.4      -> Intergalactica por Tailscale (desde el celu, afuera)
+//   localhost / .55.41 -> la PC Normal, por si alguna vez se levanta el bridge ahi
+const BRIDGE_URLS_DEFAULT = ['', 'http://192.168.1.251:8793', 'http://100.112.91.4:8793',
+                             'http://localhost:8793', 'http://100.110.55.41:8793'];
 const CHAT_MODELS = [
   { id: 'bridge-haiku',  label: 'Haiku · rápido · gratis',                     grupo: 'bridge', prov: 'bridge' },
   { id: 'bridge-sonnet', label: 'Sonnet · el más capaz · gratis',              grupo: 'bridge', prov: 'bridge' },
