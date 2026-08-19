@@ -57,6 +57,7 @@ const HISTORY_KEY = 'miDiaNutricional_v9_history';
 // catalogo (ej: la banana esta en la seccion del desayuno pero se la comio de postre
 // del almuerzo). { 'sec:des_carb': 'almuerzo', 'lib:x123': 'cena' }
 const REASIGN_STORAGE = 'miDiaNutricional_reasign';
+const ZOOM_TABLA_STORAGE = 'miDiaNutricional_zoomTabla';
 const AI_KEY_STORAGE = 'miDiaNutricional_openaiKey';
 const AI_MODEL_STORAGE = 'miDiaNutricional_openaiModel';
 const AI_SYSTEM_PROMPT = `Convertis una descripcion en lenguaje natural de lo que una persona comio hoy en selecciones de un tracker nutricional.
@@ -652,6 +653,31 @@ function App() {
 
   useEffect(() => { try { localStorage.setItem(EXTRAS_STORAGE, JSON.stringify(extrasLibres)); } catch(e){} }, [extrasLibres]);
 
+  // Zoom del resumen: con 6 comidas + total la tabla no entra en pantalla y hay que
+  // scrollear de costado. Achicandola se ve el dia completo de una.
+  const [zoomTabla, setZoomTabla] = useState(() => {
+    try { return parseFloat(localStorage.getItem(ZOOM_TABLA_STORAGE)) || 1; } catch(e){ return 1; }
+  });
+  useEffect(() => { try { localStorage.setItem(ZOOM_TABLA_STORAGE, String(zoomTabla)); } catch(e){} }, [zoomTabla]);
+  const cajaTablaRef = useRef(null);
+  // Ajustar: calcula el zoom justo para que entre todo el ancho, sin scroll lateral
+  const ajustarTabla = () => {
+    const caja = cajaTablaRef.current;
+    if (!caja) return;
+    const tabla = caja.querySelector('table');
+    if (!tabla) return;
+    // Medir SIN zoom: el ancho no escala lineal con el zoom (el texto tiene un minimo
+    // propio), asi que dividir el ancho actual por el zoom daba de menos y el ajuste
+    // se quedaba corto — la tabla seguia sin entrar.
+    const zPrevio = tabla.style.zoom;
+    tabla.style.zoom = '1';
+    const anchoReal = tabla.scrollWidth;
+    tabla.style.zoom = zPrevio;
+    if (!anchoReal) return;
+    const z = Math.max(0.25, Math.min(1.4, (caja.clientWidth - 8) / anchoReal));
+    setZoomTabla(Math.round(z * 100) / 100);
+  };
+
   // Reasignaciones del resumen de abajo (arrastrar un item de una comida a otra)
   const [arrastrado, setArrastrado] = useState(null);   // item que se esta moviendo
   const [menuItem, setMenuItem] = useState(null);       // menu por toque (celular)
@@ -1181,9 +1207,11 @@ function App() {
           if (r.ok && !cancelado) {
             setBridgeUrl(u);
             setBridgeOk(true);
-            // Si no habia modelo elegido o era uno de Gemini, cambiar al bridge
+            // Si no habia modelo elegido o era uno de Gemini, cambiar al bridge.
+            // Sonnet por defecto: medido el 2026-08-19, tarda casi lo mismo que Haiku
+            // (12,8 s contra 13,3 s en el mismo pedido), asi que el mas capaz sale gratis.
             if (chatModel === MODELO_INICIAL || chatModel.indexOf('gemini') === 0) {
-              setChatModel('bridge-haiku');
+              setChatModel('bridge-sonnet');
             }
             // Precalentar: arrancar el proceso `claude` cuesta ~7s. Pidiendolo ahora,
             // en vez de con el primer mensaje, ese mensaje sale en ~4s y no en ~11s.
@@ -1191,7 +1219,7 @@ function App() {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({
-                model: BRIDGE_MODELS[chatModel] || 'claude-haiku-4-5-20251001',
+                model: BRIDGE_MODELS[chatModel] || BRIDGE_MODELS['bridge-sonnet'],
                 systemPrompt: chatSystemPrompt(),
                 convId: convIdRef.current,
               }),
@@ -2507,12 +2535,27 @@ function App() {
                 📋 Resumen de hoy
                 <span style={{ fontSize: 10, color: "#8899BB", fontWeight: 500 }}> · arrastrá un alimento a otra comida (o tocalo)</span>
               </div>
-              {Object.keys(reasign).length > 0 && (
-                <button onClick={() => setReasign({})} title="Devolver todo a la comida que le toca por catálogo"
-                  style={{ background: "transparent", border: "1px solid #2E4272", borderRadius: 6, color: "#8899BB", padding: "3px 8px", fontSize: 10, cursor: "pointer" }}>
-                  ↺ deshacer los {Object.keys(reasign).length} movidos
-                </button>
-              )}
+              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                {Object.keys(reasign).length > 0 && (
+                  <button onClick={() => setReasign({})} title="Devolver todo a la comida que le toca por catálogo"
+                    style={{ background: "transparent", border: "1px solid #2E4272", borderRadius: 6, color: "#8899BB", padding: "3px 8px", fontSize: 10, cursor: "pointer" }}>
+                    ↺ deshacer los {Object.keys(reasign).length} movidos
+                  </button>
+                )}
+                {/* Zoom: con 6 comidas + total la tabla no entra y hay que ir de costado */}
+                <div style={{ display: "flex", alignItems: "center", gap: 2, border: "1px solid #2E4272", borderRadius: 6, overflow: "hidden" }}>
+                  <button onClick={() => setZoomTabla(z => Math.max(0.25, Math.round((z - 0.05) * 100) / 100))}
+                    title="Achicar la tabla" disabled={zoomTabla <= 0.25}
+                    style={{ background: "transparent", border: "none", color: zoomTabla <= 0.25 ? "#2E4272" : "#C8D2E8", padding: "3px 9px", fontSize: 14, lineHeight: 1, cursor: zoomTabla <= 0.25 ? "default" : "pointer", fontWeight: 700 }}>−</button>
+                  <button onClick={ajustarTabla} title="Ajustar para que entre todo en pantalla"
+                    style={{ background: "transparent", border: "none", borderLeft: "1px solid #2E4272", borderRight: "1px solid #2E4272", color: "#8899BB", padding: "3px 7px", fontSize: 10, cursor: "pointer", minWidth: 46 }}>
+                    {Math.round(zoomTabla * 100)}%
+                  </button>
+                  <button onClick={() => setZoomTabla(z => Math.min(1.4, Math.round((z + 0.05) * 100) / 100))}
+                    title="Agrandar la tabla" disabled={zoomTabla >= 1.4}
+                    style={{ background: "transparent", border: "none", color: zoomTabla >= 1.4 ? "#2E4272" : "#C8D2E8", padding: "3px 9px", fontSize: 14, lineHeight: 1, cursor: zoomTabla >= 1.4 ? "default" : "pointer", fontWeight: 700 }}>+</button>
+                </div>
+              </div>
             </div>
 
             {itemsCargados.length === 0 ? (
@@ -2520,15 +2563,19 @@ function App() {
                 Todavía no cargaste nada hoy.
               </div>
             ) : (
-              <div style={{ overflowX: "auto" }}>
-                <table style={{ borderCollapse: "collapse", width: "100%", minWidth: 620, fontSize: 11 }}>
+              <div ref={cajaTablaRef} style={{ overflowX: "auto" }}>
+                {/* `zoom` (y no `transform: scale`) para que el contenedor se achique
+                    con la tabla: con scale quedaria el hueco del tamaño original */}
+                <table style={{ borderCollapse: "collapse", width: "100%", minWidth: zoomTabla < 1 ? 0 : 620, fontSize: 11,
+                                zoom: zoomTabla }}>
                   <thead>
                     <tr>
                       <th style={{ border: bordeCelda, padding: "6px 8px", background: "#0F1830", color: "#8899BB", fontSize: 10, textAlign: "left", minWidth: 104, position: "sticky", left: 0, zIndex: 2 }}></th>
                       {cols.map(col => (
                         <th key={col.key} {...celdaDrop(col.key)}
                           style={{ border: bordeCelda, padding: "6px 8px", background: arrastrado ? "#1B2C52" : "#0F1830",
-                                   color: arrastrado ? "#8AA4FF" : "#C8D2E8", fontSize: 10, fontWeight: 800, letterSpacing: .3, whiteSpace: "nowrap" }}>
+                                   color: arrastrado ? "#8AA4FF" : "#C8D2E8", fontSize: 10, fontWeight: 800, letterSpacing: .3,
+                                   whiteSpace: zoomTabla < 0.75 ? "normal" : "nowrap" }}>
                           {col.label}
                         </th>
                       ))}
@@ -2558,7 +2605,8 @@ function App() {
                                   style={{ cursor: "grab", userSelect: "none", padding: "3px 6px", borderRadius: 5,
                                            background: movido ? "rgba(108,92,231,.16)" : "rgba(255,255,255,.03)",
                                            border: movido ? "1px solid #6C5CE7" : "1px solid transparent",
-                                           opacity: arrastrado && arrastrado.key === it.key ? .4 : 1, whiteSpace: "nowrap" }}>
+                                           opacity: arrastrado && arrastrado.key === it.key ? .4 : 1,
+                                           whiteSpace: zoomTabla < 0.75 ? "normal" : "nowrap" }}>
                                   <span style={{ color: "#FFD93D" }}>{num(it.c)} carb</span>
                                   <span style={{ color: "#8899BB" }}>, </span>
                                   <span style={{ color: "#00E5A0" }}>{num(it.p)} pro</span>
