@@ -403,3 +403,15 @@ internet (29 ms vs 101 ms a la API) y arranque del proceso (1,7 s vs 8,6 s).
 
 **Se paga ~0,8 s por pedido** que no logré explicar (con el SDK puro empatan, a través del bridge
 no). Gastón lo aceptó a cambio de que la app funcione con la PC Normal apagada.
+
+## Herramientas de UPS que viven acá (no son de la app)
+
+`ups_estado.py` y `ups_prueba_corte.py` quedaron en esta carpeta por dónde se escribieron, pero
+**no tienen nada que ver con Mi Día Nutricional**: sirven para cualquier UPS genérica (chip
+Cypress `0665:5161`) que Windows no reconozca. El manual completo está en la skill
+**`ups-monitoreo`**; el resumen, en la auto-memoria `reference-ups-megatec-hid`.
+
+- `ups_estado.py` — potencia, carga conectada, batería, tensión de línea, alarmas.
+- `ups_prueba_corte.py` — **prueba real de autonomía**: se corta la luz con una carga puesta y
+  mide cuánto aguanta. Hace falta porque la tensión con la UPS enchufada no dice si la batería
+  está sana: el cargador la sostiene aunque esté sulfatada.
